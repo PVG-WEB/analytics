@@ -36,7 +36,7 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
 
       assert_email_delivered_with(
         to: [nil: inviter.email],
-        subject: "[Plausible Analytics] #{user.email} accepted your invitation to #{site.domain}"
+        subject: "[Payvand Analytics] #{user.email} accepted your invitation to #{site.domain}"
       )
     end
   end
@@ -57,7 +57,7 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
       assert_email_delivered_with(
         to: [nil: inviter.email],
         subject:
-          "[Plausible Analytics] #{user.email} accepted the ownership transfer of #{site.domain}"
+          "[Payvand Analytics] #{user.email} accepted the ownership transfer of #{site.domain}"
       )
     end
 
@@ -218,7 +218,7 @@ defmodule PlausibleWeb.Site.InvitationControllerTest do
 
       assert_email_delivered_with(
         to: [nil: inviter.email],
-        subject: "[Plausible Analytics] #{user.email} rejected your invitation to #{site.domain}"
+        subject: "[Payvand Analytics] #{user.email} rejected your invitation to #{site.domain}"
       )
     end
   end

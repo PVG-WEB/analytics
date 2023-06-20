@@ -1,8 +1,8 @@
-# Plausible Analytics
+# Payvand Analytics
 
 <p align="center">
   <a href="https://plausible.io/">
-    <img src="https://raw.githubusercontent.com/plausible/docs/master/static/img/plausible-analytics-icon-top.png" width="140px" alt="Plausible Analytics" />
+    <img src="https://raw.githubusercontent.com/plausible/docs/master/static/img/plausible-analytics-icon-top.png" width="140px" alt="Payvand Analytics" />
   </a>
 </p>
 <p align="center">
@@ -15,19 +15,19 @@
     <br /><br />
 </p>
 
-[Plausible Analytics](https://plausible.io/) is a simple, lightweight (< 1 KB), open source and privacy-friendly alternative to Google Analytics. It doesn’t use cookies and is fully compliant with GDPR, CCPA and PECR. You can self-host or have us run Plausible for you in the cloud. Here's [the live demo of our own website stats](https://plausible.io/plausible.io). Made and hosted in the EU 🇪🇺
+[Payvand Analytics](https://plausible.io/) is a simple, lightweight (< 1 KB), open source and privacy-friendly alternative to Google Analytics. It doesn’t use cookies and is fully compliant with GDPR, CCPA and PECR. You can self-host or have us run Plausible for you in the cloud. Here's [the live demo of our own website stats](https://plausible.io/plausible.io). Made and hosted in the EU 🇪🇺
 
 We are dedicated to making web analytics more privacy-friendly. Our mission is to reduce corporate surveillance by providing an alternative web analytics tool which doesn’t come from the AdTech world. We are completely independent and solely funded by our subscribers.
 
-![Plausible Analytics](https://plausible.io/docs/img/plausible-analytics.png)
+![Payvand Analytics](https://plausible.io/docs/img/plausible-analytics.png)
 
 ## Why Plausible?
 
 Here's what makes Plausible a great Google Analytics alternative and why we're trusted by thousands of paying subscribers to deliver their website and business insights:
 
-- **Clutter Free**: Plausible Analytics provides [simple web analytics](https://plausible.io/simple-web-analytics) and it cuts through the noise. No layers of menus, no need for custom reports. Get all the important insights on one single page. No training necessary.
+- **Clutter Free**: Payvand Analytics provides [simple web analytics](https://plausible.io/simple-web-analytics) and it cuts through the noise. No layers of menus, no need for custom reports. Get all the important insights on one single page. No training necessary.
 - **GDPR/CCPA/PECR compliant**: Measure traffic, not individuals. No personal data or IP addresses are ever stored in our database. We don't use cookies or any other persistent identifiers. [Read more about our data policy](https://plausible.io/data-policy)
-- **Lightweight**: Plausible Analytics works by loading a script on your website, like Google Analytics. Our script is [45x smaller](https://plausible.io/lightweight-web-analytics), making your website quicker to load.
+- **Lightweight**: Payvand Analytics works by loading a script on your website, like Google Analytics. Our script is [45x smaller](https://plausible.io/lightweight-web-analytics), making your website quicker to load.
 - **Email or Slack reports**: Keep an eye on your traffic with weekly and/or monthly email or Slack reports. You can also get traffic spike notifications.
 - **Open website stats**: You have the option to be transparent and open your web analytics to everyone. Your website stats are private by default but you can choose to make them public so anyone with your custom link can view them.
 - **Define key goals and track conversions**: Set custom events or page URLs as your goals and see how they convert over time to understand and identify the trends that matter. Includes easy ways to track outbound link clicks and 404 error pages.
@@ -36,9 +36,9 @@ Here's what makes Plausible a great Google Analytics alternative and why we're t
 
 Interested to learn more? [Read more on our website](https://plausible.io), learn more about the team and the goals of the project on [our about page](https://plausible.io/about) or explore [the documentation](https://plausible.io/docs).
 
-## Why is Plausible Analytics Cloud not free like Google Analytics?
+## Why is Payvand Analytics Cloud not free like Google Analytics?
 
-Plausible Analytics is an independently owned and actively developed project. To keep the project development going, to stay in business, to continue putting effort into building a better product and to cover our costs, we need to charge a fee.
+Payvand Analytics is an independently owned and actively developed project. To keep the project development going, to stay in business, to continue putting effort into building a better product and to cover our costs, we need to charge a fee.
 
 Google Analytics is free because Google has built their company and their wealth by collecting and analyzing huge amounts of personal information from web users and using these personal and behavioral insights to sell advertisements.
 
@@ -54,9 +54,9 @@ In order to be compliant with the GDPR and the Schrems II ruling, all visitor da
 
 Our managed hosting can save a substantial amount of developer time and resources. For most sites this ends up being the best value option and the revenue goes to funding the maintenance and further development of Plausible. So you’ll be supporting open source software and getting a great service!
 
-### Can Plausible Analytics be self-hosted?
+### Can Payvand Analytics be self-hosted?
 
-Plausible is fully [open source web analytics](https://plausible.io/open-source-website-analytics) and we have a free as in beer [Plausible Analytics Self-Hosted](https://plausible.io/self-hosted-web-analytics) solution. It’s exactly the same product as our cloud solution with a less frequent release schedule (think of it as a long term support release).
+Plausible is fully [open source web analytics](https://plausible.io/open-source-website-analytics) and we have a free as in beer [Payvand Analytics Self-Hosted](https://plausible.io/self-hosted-web-analytics) solution. It’s exactly the same product as our cloud solution with a less frequent release schedule (think of it as a long term support release).
 
 Bug fixes and new features are released to the cloud version several times per week. Features are battle-tested in the cloud which allows us to fix any bugs before the general self-hosted release. Every six months or so we combine all the changes into a new self-hosted release.
 
@@ -76,10 +76,10 @@ Interested in self-hosting Plausible on your server? Take a look at our [self-ho
 Plausible Self-Hosted is a community supported project and there are no guarantees that you will get support from the creators of Plausible to troubleshoot your self-hosting issues. There is a [community supported forum](https://github.com/plausible/analytics/discussions/categories/self-hosted-support) where you can ask for help.
 
 Our only source of funding is our premium, managed service for running Plausible in the cloud. If you're looking for an alternative way to support the project, we've put together some sponsorship packages. If you choose to self-host Plausible you can [become a sponsor](https://github.com/sponsors/plausible) which is a great way to give back to the community and to contribute to the long-term sustainability of the project.
- 
+
 ## Technology
 
-Plausible Analytics is a standard Elixir/Phoenix application backed by a PostgreSQL database for general data and a Clickhouse
+Payvand Analytics is a standard Elixir/Phoenix application backed by a PostgreSQL database for general data and a Clickhouse
 database for stats. On the frontend we use [TailwindCSS](https://tailwindcss.com/) for styling and React to make the dashboard interactive.
 
 ## Contributors

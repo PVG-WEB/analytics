@@ -186,7 +186,7 @@ defmodule PlausibleWeb.Email do
     base_email()
     |> to(user)
     |> tag("yearly-expiration")
-    |> subject("Your Plausible subscription is about to expire")
+    |> subject("Your Payvand subscription is about to expire")
     |> render("yearly_expiration_notification.html", %{
       user: user,
       date: date
@@ -197,7 +197,7 @@ defmodule PlausibleWeb.Email do
     base_email()
     |> to(user.email)
     |> tag("cancelled-email")
-    |> subject("Your Plausible Analytics subscription has been canceled")
+    |> subject("Your Payvand Analytics subscription has been canceled")
     |> render("cancellation_email.html", user: user)
   end
 
@@ -205,7 +205,7 @@ defmodule PlausibleWeb.Email do
     base_email()
     |> to(invitation.email)
     |> tag("new-user-invitation")
-    |> subject("[Plausible Analytics] You've been invited to #{invitation.site.domain}")
+    |> subject("[Payvand Analytics] You've been invited to #{invitation.site.domain}")
     |> render("new_user_invitation.html",
       invitation: invitation
     )
@@ -215,7 +215,7 @@ defmodule PlausibleWeb.Email do
     base_email()
     |> to(invitation.email)
     |> tag("existing-user-invitation")
-    |> subject("[Plausible Analytics] You've been invited to #{invitation.site.domain}")
+    |> subject("[Payvand Analytics] You've been invited to #{invitation.site.domain}")
     |> render("existing_user_invitation.html",
       invitation: invitation
     )
@@ -225,7 +225,7 @@ defmodule PlausibleWeb.Email do
     base_email()
     |> to(invitation.email)
     |> tag("ownership-transfer-request")
-    |> subject("[Plausible Analytics] Request to transfer ownership of #{invitation.site.domain}")
+    |> subject("[Payvand Analytics] Request to transfer ownership of #{invitation.site.domain}")
     |> render("ownership_transfer_request.html",
       invitation: invitation,
       new_owner_account: new_owner_account
@@ -237,7 +237,7 @@ defmodule PlausibleWeb.Email do
     |> to(invitation.inviter.email)
     |> tag("invitation-accepted")
     |> subject(
-      "[Plausible Analytics] #{invitation.email} accepted your invitation to #{invitation.site.domain}"
+      "[Payvand Analytics] #{invitation.email} accepted your invitation to #{invitation.site.domain}"
     )
     |> render("invitation_accepted.html",
       user: invitation.inviter,
@@ -250,7 +250,7 @@ defmodule PlausibleWeb.Email do
     |> to(invitation.inviter.email)
     |> tag("invitation-rejected")
     |> subject(
-      "[Plausible Analytics] #{invitation.email} rejected your invitation to #{invitation.site.domain}"
+      "[Payvand Analytics] #{invitation.email} rejected your invitation to #{invitation.site.domain}"
     )
     |> render("invitation_rejected.html",
       user: invitation.inviter,
@@ -263,7 +263,7 @@ defmodule PlausibleWeb.Email do
     |> to(invitation.inviter.email)
     |> tag("ownership-transfer-accepted")
     |> subject(
-      "[Plausible Analytics] #{invitation.email} accepted the ownership transfer of #{invitation.site.domain}"
+      "[Payvand Analytics] #{invitation.email} accepted the ownership transfer of #{invitation.site.domain}"
     )
     |> render("ownership_transfer_accepted.html",
       user: invitation.inviter,
@@ -276,7 +276,7 @@ defmodule PlausibleWeb.Email do
     |> to(invitation.inviter.email)
     |> tag("ownership-transfer-rejected")
     |> subject(
-      "[Plausible Analytics] #{invitation.email} rejected the ownership transfer of #{invitation.site.domain}"
+      "[Payvand Analytics] #{invitation.email} rejected the ownership transfer of #{invitation.site.domain}"
     )
     |> render("ownership_transfer_rejected.html",
       user: invitation.inviter,
@@ -288,7 +288,7 @@ defmodule PlausibleWeb.Email do
     base_email()
     |> to(membership.user.email)
     |> tag("site-member-removed")
-    |> subject("[Plausible Analytics] Your access to #{membership.site.domain} has been revoked")
+    |> subject("[Payvand Analytics] Your access to #{membership.site.domain} has been revoked")
     |> render("site_member_removed.html",
       user: membership.user,
       membership: membership

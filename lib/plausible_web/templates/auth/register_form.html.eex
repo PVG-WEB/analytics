@@ -1,7 +1,7 @@
 <div class="mx-auto mt-6 text-center dark:text-gray-300">
   <h1 class="text-3xl font-black">
     <%= if @is_selfhost do %>
-    Register your Plausible Analytics account
+    Register your Payvand Analytics account
     <% else %>
     Register your 30-day unlimited-use free trial
     <% end %>

@@ -74,7 +74,7 @@ defmodule PlausibleWeb.Site.MembershipControllerTest do
 
       assert_email_delivered_with(
         to: [nil: "john.doe@example.com"],
-        subject: "[Plausible Analytics] You've been invited to #{site.domain}"
+        subject: "[Payvand Analytics] You've been invited to #{site.domain}"
       )
     end
 
@@ -89,7 +89,7 @@ defmodule PlausibleWeb.Site.MembershipControllerTest do
 
       assert_email_delivered_with(
         to: [nil: existing_user.email],
-        subject: "[Plausible Analytics] You've been invited to #{site.domain}"
+        subject: "[Payvand Analytics] You've been invited to #{site.domain}"
       )
     end
 
@@ -121,7 +121,7 @@ defmodule PlausibleWeb.Site.MembershipControllerTest do
 
       assert_email_delivered_with(
         to: [nil: "joe@example.com"],
-        subject: "[Plausible Analytics] You've been invited to #{site.domain}"
+        subject: "[Payvand Analytics] You've been invited to #{site.domain}"
       )
 
       req2 =
@@ -132,7 +132,7 @@ defmodule PlausibleWeb.Site.MembershipControllerTest do
 
       refute_email_delivered_with(
         to: [nil: "joe@example.com"],
-        subject: "[Plausible Analytics] You've been invited to #{site.domain}"
+        subject: "[Payvand Analytics] You've been invited to #{site.domain}"
       )
 
       assert people_settings = redirected_to(req2, 302)
@@ -178,7 +178,7 @@ defmodule PlausibleWeb.Site.MembershipControllerTest do
 
       assert_email_delivered_with(
         to: [nil: "john.doe@example.com"],
-        subject: "[Plausible Analytics] Request to transfer ownership of #{site.domain}"
+        subject: "[Payvand Analytics] Request to transfer ownership of #{site.domain}"
       )
     end
 
@@ -190,7 +190,7 @@ defmodule PlausibleWeb.Site.MembershipControllerTest do
 
       assert_email_delivered_with(
         to: [nil: existing_user.email],
-        subject: "[Plausible Analytics] Request to transfer ownership of #{site.domain}"
+        subject: "[Payvand Analytics] Request to transfer ownership of #{site.domain}"
       )
     end
 
@@ -395,7 +395,7 @@ defmodule PlausibleWeb.Site.MembershipControllerTest do
 
       assert_email_delivered_with(
         to: [nil: admin.email],
-        subject: "[Plausible Analytics] Your access to #{site.domain} has been revoked"
+        subject: "[Payvand Analytics] Your access to #{site.domain} has been revoked"
       )
     end
   end

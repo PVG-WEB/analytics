@@ -546,7 +546,7 @@ defmodule Plausible.BillingTest do
       })
 
       assert_email_delivered_with(
-        subject: "Your Plausible Analytics subscription has been canceled"
+        subject: "Your Payvand Analytics subscription has been canceled"
       )
     end
   end
