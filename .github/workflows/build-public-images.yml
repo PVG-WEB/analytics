@@ -9,7 +9,7 @@ env:
   # github.repository as <account>/<repo>
 jobs:
   build:
-    runs-on: buildjet-4vcpu-ubuntu-2004
+    runs-on: ubuntu-latest
 
     steps:
       - name: Docker meta
