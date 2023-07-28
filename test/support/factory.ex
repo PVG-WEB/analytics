@@ -25,6 +25,7 @@ defmodule Plausible.Factory do
     domain = sequence(:domain, &"example-#{&1}.com")
 
     %Plausible.Site{
+      native_stats_start_at: ~N[2000-01-01 00:00:00],
       domain: domain,
       timezone: "UTC"
     }
@@ -37,32 +38,18 @@ defmodule Plausible.Factory do
   def ch_session_factory do
     hostname = sequence(:domain, &"example-#{&1}.com")
 
-    %Plausible.ClickhouseSession{
+    %Plausible.ClickhouseSessionV2{
       sign: 1,
       session_id: SipHash.hash!(hash_key(), Ecto.UUID.generate()),
       user_id: SipHash.hash!(hash_key(), Ecto.UUID.generate()),
       hostname: hostname,
-      domain: hostname,
-      referrer: "",
-      referrer_source: "",
-      utm_medium: "",
-      utm_source: "",
-      utm_campaign: "",
-      utm_content: "",
-      utm_term: "",
+      site_id: Enum.random(1000..10_000),
       entry_page: "/",
       pageviews: 1,
       events: 1,
-      duration: 0,
       start: Timex.now(),
       timestamp: Timex.now(),
-      is_bounce: false,
-      browser: "",
-      browser_version: "",
-      country_code: "",
-      screen_size: "",
-      operating_system: "",
-      operating_system_version: ""
+      is_bounce: false
     }
   end
 
@@ -78,28 +65,13 @@ defmodule Plausible.Factory do
   def event_factory do
     hostname = sequence(:domain, &"example-#{&1}.com")
 
-    %Plausible.ClickhouseEvent{
+    %Plausible.ClickhouseEventV2{
       hostname: hostname,
-      domain: hostname,
+      site_id: Enum.random(1000..10_000),
       pathname: "/",
       timestamp: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second),
       user_id: SipHash.hash!(hash_key(), Ecto.UUID.generate()),
-      session_id: SipHash.hash!(hash_key(), Ecto.UUID.generate()),
-      referrer: "",
-      referrer_source: "",
-      utm_medium: "",
-      utm_source: "",
-      utm_campaign: "",
-      utm_content: "",
-      utm_term: "",
-      browser: "",
-      browser_version: "",
-      country_code: "",
-      screen_size: "",
-      operating_system: "",
-      operating_system_version: "",
-      "meta.key": [],
-      "meta.value": []
+      session_id: SipHash.hash!(hash_key(), Ecto.UUID.generate())
     }
   end
 

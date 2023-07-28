@@ -41,6 +41,14 @@ defmodule Plausible.SiteAdmin do
       public: nil,
       owner: %{value: &get_owner_email/1},
       other_members: %{value: &get_other_members/1},
+      allowed_event_props: %{
+        value: fn site ->
+          case site.allowed_event_props do
+            nil -> ""
+            list -> Enum.join(list, ", ")
+          end
+        end
+      },
       limits: %{
         value: fn site ->
           case site.ingest_rate_limit_threshold do
@@ -55,14 +63,36 @@ defmodule Plausible.SiteAdmin do
 
   def list_actions(_conn) do
     [
-      transfer_data: %{
-        name: "Transfer data",
+      set_allowed_event_props: %{
         inputs: [
-          %{name: "domain", title: "to domain", default: nil}
+          %{
+            name: "props",
+            title:
+              "Insert comma separated property names (e.g: author, logged_in, url, ...). Submit a blank field to allow all property names",
+            default: ""
+          }
         ],
-        action: fn _conn, sites, params -> transfer_data(sites, params) end
+        name: "Allow only these custom properties",
+        action: &set_allowed_props_for_site/3
       }
     ]
+  end
+
+  def set_allowed_props_for_site(_conn, [site], params) do
+    props_list =
+      case String.trim(params["props"]) do
+        "" -> nil
+        props -> String.split(props, ~r/\s*,\s*/)
+      end
+
+    Plausible.Site.set_allowed_event_props(site, props_list)
+    |> Repo.update!()
+
+    :ok
+  end
+
+  def set_allowed_props_for_site(_, _, _) do
+    {:error, "Please select only one site for this action"}
   end
 
   defp format_date(date) do
@@ -83,69 +113,12 @@ defmodule Plausible.SiteAdmin do
     |> Enum.join(", ")
   end
 
-  def transfer_data([from_site], params) do
-    to_site = Repo.get_by(Plausible.Site, domain: params["domain"])
-
-    if to_site do
-      event_q = event_transfer_query(from_site.domain, to_site.domain)
-      {:ok, _} = Ecto.Adapters.SQL.query(Plausible.ClickhouseRepo, event_q, [], timeout: 30_000)
-
-      session_q = session_transfer_query(from_site.domain, to_site.domain)
-      {:ok, _} = Ecto.Adapters.SQL.query(Plausible.ClickhouseRepo, session_q, [], timeout: 30_000)
-
-      start_date = Plausible.Stats.Clickhouse.pageview_start_date_local(from_site)
-
-      {:ok, _} =
-        Plausible.Site.set_stats_start_date(to_site, start_date)
-        |> Repo.update()
-
-      :ok
-    else
-      {:error, "Cannot transfer to non-existing domain"}
-    end
-  end
-
-  def transfer_data(_, _), do: {:error, "Please select exactly one site for this action"}
-
-  def session_transfer_query(from_domain, to_domain) do
-    fields = get_struct_fields(Plausible.ClickhouseSession)
-
-    "INSERT INTO sessions (" <>
-      stringify_fields(fields) <>
-      ") SELECT " <>
-      stringify_fields(fields, to_domain, from_domain) <>
-      " FROM (SELECT * FROM sessions WHERE domain='#{from_domain}')"
-  end
-
-  def event_transfer_query(from_domain, to_domain) do
-    fields = get_struct_fields(Plausible.ClickhouseEvent)
-
-    "INSERT INTO events (" <>
-      stringify_fields(fields) <>
-      ") SELECT " <>
-      stringify_fields(fields, to_domain, from_domain) <>
-      " FROM (SELECT * FROM events WHERE domain='#{from_domain}')"
-  end
-
   def get_struct_fields(module) do
     module.__struct__()
     |> Map.drop([:__meta__, :__struct__])
     |> Map.keys()
     |> Enum.map(&Atom.to_string/1)
     |> Enum.sort()
-  end
-
-  defp stringify_fields(fields), do: Enum.join(fields, ", ")
-
-  defp stringify_fields(fields, domain_value, transferred_from_value) do
-    Enum.map(fields, fn field ->
-      case field do
-        "domain" -> "'#{domain_value}' as domain"
-        "transferred_from" -> "'#{transferred_from_value}' as transferred_from"
-        _ -> field
-      end
-    end)
-    |> stringify_fields()
   end
 
   def create_changeset(schema, attrs), do: Plausible.Site.crm_changeset(schema, attrs)

@@ -2,17 +2,23 @@
 # platform specific, it makes sense to build it in the docker
 
 #### Builder
-FROM hexpm/elixir:1.13.4-erlang-24.3.3-alpine-3.15.3 as buildcontainer
+FROM hexpm/elixir:1.14.3-erlang-25.2.3-alpine-3.18.0 as buildcontainer
 
 # preparation
 ENV MIX_ENV=prod
 ENV NODE_ENV=production
+ENV NODE_OPTIONS=--openssl-legacy-provider
+
+# custom ERL_FLAGS are passed for (public) multi-platform builds
+# to fix qemu segfault, more info: https://github.com/erlang/otp/pull/6340
+ARG ERL_FLAGS
+ENV ERL_FLAGS=$ERL_FLAGS
 
 RUN mkdir /app
 WORKDIR /app
 
 # install build dependencies
-RUN apk add --no-cache git nodejs yarn python3 npm ca-certificates wget gnupg make erlang gcc libc-dev && \
+RUN apk add --no-cache git nodejs yarn python3 npm ca-certificates wget gnupg make gcc libc-dev && \
   npm install npm@latest -g && \
   npm install -g webpack
 
@@ -47,8 +53,8 @@ COPY rel rel
 RUN mix release plausible
 
 # Main Docker Image
-FROM alpine:3.15.3
-LABEL maintainer="tckb <tckb@tgrthi.me>"
+FROM alpine:3.18.0
+LABEL maintainer="plausible.io <hello@plausible.io>"
 
 ARG BUILD_METADATA={}
 ENV BUILD_METADATA=$BUILD_METADATA
@@ -56,7 +62,7 @@ ENV LANG=C.UTF-8
 
 RUN apk upgrade --no-cache
 
-RUN apk add --no-cache openssl ncurses libstdc++ libgcc
+RUN apk add --no-cache openssl ncurses libstdc++ libgcc ca-certificates
 
 COPY ./rel/docker-entrypoint.sh /entrypoint.sh
 

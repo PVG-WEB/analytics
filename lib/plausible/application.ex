@@ -9,6 +9,10 @@ defmodule Plausible.Application do
     children = [
       Plausible.Repo,
       Plausible.ClickhouseRepo,
+      Plausible.IngestRepo,
+      Plausible.AsyncInsertRepo,
+      Plausible.ImportDeletionRepo,
+      Plausible.Ingestion.Counters,
       {Finch, name: Plausible.Finch, pools: finch_pool_config()},
       {Phoenix.PubSub, name: Plausible.PubSub},
       Plausible.Session.Salts,
@@ -30,9 +34,14 @@ defmodule Plausible.Application do
     ]
 
     opts = [strategy: :one_for_one, name: Plausible.Supervisor]
+
     setup_sentry()
     setup_opentelemetry()
+
+    setup_geolocation()
     Location.load_all()
+    Plausible.Geo.await_loader()
+
     Supervisor.start_link(children, opts)
   end
 
@@ -55,7 +64,7 @@ defmodule Plausible.Application do
   end
 
   defp maybe_add_sentry_pool(pool_config) do
-    case Application.get_env(:sentry, :dsn) do
+    case Sentry.Config.dsn() do
       dsn when is_binary(dsn) ->
         Map.put(pool_config, dsn, size: 50)
 
@@ -118,5 +127,10 @@ defmodule Plausible.Application do
     OpentelemetryEcto.setup([:plausible, :repo])
     OpentelemetryEcto.setup([:plausible, :clickhouse_repo])
     OpentelemetryOban.setup()
+  end
+
+  defp setup_geolocation do
+    opts = Application.fetch_env!(:plausible, Plausible.Geo)
+    :ok = Plausible.Geo.load_db(opts)
   end
 end

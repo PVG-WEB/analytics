@@ -5,11 +5,12 @@ defmodule Plausible.Ingestion.Event do
   are uniformly either buffered in batches (to Clickhouse) or dropped
   (e.g. due to spam blocklist) from the processing pipeline.
   """
-  alias Plausible.Ingestion.{Request, CityOverrides}
-  alias Plausible.ClickhouseEvent
+  alias Plausible.Ingestion.Request
+  alias Plausible.ClickhouseEventV2
   alias Plausible.Site.GateKeeper
 
   defstruct domain: nil,
+            site_id: nil,
             clickhouse_event_attrs: %{},
             clickhouse_event: nil,
             dropped?: false,
@@ -26,8 +27,9 @@ defmodule Plausible.Ingestion.Event do
 
   @type t() :: %__MODULE__{
           domain: String.t() | nil,
+          site_id: pos_integer() | nil,
           clickhouse_event_attrs: map(),
-          clickhouse_event: %ClickhouseEvent{} | nil,
+          clickhouse_event: %ClickhouseEventV2{} | nil,
           dropped?: boolean(),
           drop_reason: drop_reason(),
           request: Request.t(),
@@ -43,10 +45,10 @@ defmodule Plausible.Ingestion.Event do
       else
         Enum.reduce(domains, [], fn domain, acc ->
           case GateKeeper.check(domain) do
-            :allow ->
+            {:allow, site_id} ->
               processed =
                 domain
-                |> new(request)
+                |> new(site_id, request)
                 |> process_unless_dropped(pipeline())
 
               [processed | acc]
@@ -71,6 +73,23 @@ defmodule Plausible.Ingestion.Event do
     [:plausible, :ingest, :event, :dropped]
   end
 
+  @spec emit_telemetry_buffered(t()) :: :ok
+  def emit_telemetry_buffered(event) do
+    :telemetry.execute(telemetry_event_buffered(), %{}, %{
+      domain: event.domain,
+      request_timestamp: event.request.timestamp
+    })
+  end
+
+  @spec emit_telemetry_dropped(t(), drop_reason()) :: :ok
+  def emit_telemetry_dropped(event, reason) do
+    :telemetry.execute(telemetry_event_dropped(), %{}, %{
+      domain: event.domain,
+      reason: reason,
+      request_timestamp: event.request.timestamp
+    })
+  end
+
   defp pipeline() do
     [
       &put_user_agent/1,
@@ -78,7 +97,6 @@ defmodule Plausible.Ingestion.Event do
       &put_referrer/1,
       &put_utm_tags/1,
       &put_geolocation/1,
-      &put_screen_size/1,
       &put_props/1,
       &put_salts/1,
       &put_user_id/1,
@@ -101,13 +119,17 @@ defmodule Plausible.Ingestion.Event do
     struct!(__MODULE__, domain: domain, request: request)
   end
 
+  defp new(domain, site_id, request) do
+    struct!(__MODULE__, domain: domain, site_id: site_id, request: request)
+  end
+
   defp drop(%__MODULE__{} = event, reason, attrs \\ []) do
     fields =
       attrs
       |> Keyword.put(:dropped?, true)
       |> Keyword.put(:drop_reason, reason)
 
-    emit_telemetry_dropped(reason)
+    emit_telemetry_dropped(event, reason)
     struct!(event, fields)
   end
 
@@ -128,7 +150,8 @@ defmodule Plausible.Ingestion.Event do
           operating_system: os_name(user_agent),
           operating_system_version: os_version(user_agent),
           browser: browser_name(user_agent),
-          browser_version: browser_version(user_agent)
+          browser_version: browser_version(user_agent),
+          screen_size: screen_size(user_agent)
         })
 
       _any ->
@@ -139,6 +162,7 @@ defmodule Plausible.Ingestion.Event do
   defp put_basic_info(%__MODULE__{} = event) do
     update_attrs(event, %{
       domain: event.domain,
+      site_id: event.site_id,
       timestamp: event.request.timestamp,
       name: event.request.event_name,
       hostname: event.request.hostname,
@@ -168,52 +192,9 @@ defmodule Plausible.Ingestion.Event do
   end
 
   defp put_geolocation(%__MODULE__{} = event) do
-    result = Geolix.lookup(event.request.remote_ip, where: :geolocation)
+    result = Plausible.Ingestion.Geolocation.lookup(event.request.remote_ip) || %{}
 
-    country_code =
-      get_in(result, [:country, :iso_code])
-      |> ignore_unknown_country()
-
-    city_geoname_id = get_in(result, [:city, :geoname_id])
-    city_geoname_id = Map.get(CityOverrides.get(), city_geoname_id, city_geoname_id)
-
-    subdivision1_code =
-      case result do
-        %{subdivisions: [%{iso_code: iso_code} | _rest]} ->
-          country_code <> "-" <> iso_code
-
-        _ ->
-          ""
-      end
-
-    subdivision2_code =
-      case result do
-        %{subdivisions: [_first, %{iso_code: iso_code} | _rest]} ->
-          country_code <> "-" <> iso_code
-
-        _ ->
-          ""
-      end
-
-    update_attrs(event, %{
-      country_code: country_code,
-      subdivision1_code: subdivision1_code,
-      subdivision2_code: subdivision2_code,
-      city_geoname_id: city_geoname_id
-    })
-  end
-
-  defp put_screen_size(%__MODULE__{} = event) do
-    screen_size =
-      case event.request.screen_width do
-        nil -> nil
-        width when width < 576 -> "Mobile"
-        width when width < 992 -> "Tablet"
-        width when width < 1440 -> "Laptop"
-        width when width >= 1440 -> "Desktop"
-      end
-
-    update_attrs(event, %{screen_size: screen_size})
+    update_attrs(event, result)
   end
 
   defp put_props(%__MODULE__{request: %{props: %{} = props}} = event) do
@@ -245,7 +226,7 @@ defmodule Plausible.Ingestion.Event do
     clickhouse_event =
       event
       |> Map.fetch!(:clickhouse_event_attrs)
-      |> ClickhouseEvent.new()
+      |> ClickhouseEventV2.new()
 
     case Ecto.Changeset.apply_action(clickhouse_event, nil) do
       {:ok, valid_clickhouse_event} ->
@@ -273,7 +254,7 @@ defmodule Plausible.Ingestion.Event do
 
   defp write_to_buffer(%__MODULE__{clickhouse_event: clickhouse_event} = event) do
     {:ok, _} = Plausible.Event.WriteBuffer.insert(clickhouse_event)
-    emit_telemetry_buffered()
+    emit_telemetry_buffered(event)
     event
   end
 
@@ -337,6 +318,41 @@ defmodule Plausible.Ingestion.Event do
     end
   end
 
+  @mobile_types [
+    "smartphone",
+    "feature phone",
+    "portable media player",
+    "phablet",
+    "wearable",
+    "camera"
+  ]
+  @tablet_types ["car browser", "tablet"]
+  @desktop_types ["tv", "console", "desktop"]
+  alias UAInspector.Result.Device
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp screen_size(ua) do
+    case ua.device do
+      %Device{type: t} when t in @mobile_types ->
+        "Mobile"
+
+      %Device{type: t} when t in @tablet_types ->
+        "Tablet"
+
+      %Device{type: t} when t in @desktop_types ->
+        "Desktop"
+
+      %Device{type: type} ->
+        Sentry.capture_message("Could not determine device type from UAInspector",
+          extra: %{type: type}
+        )
+
+        nil
+
+      _ ->
+        nil
+    end
+  end
+
   defp browser_version(ua) do
     case ua.client do
       :unknown -> ""
@@ -372,9 +388,6 @@ defmodule Plausible.Ingestion.Event do
     end
   end
 
-  defp ignore_unknown_country("ZZ"), do: nil
-  defp ignore_unknown_country(country), do: country
-
   defp generate_user_id(request, domain, hostname, salt) do
     cond do
       is_nil(salt) ->
@@ -407,12 +420,4 @@ defmodule Plausible.Ingestion.Event do
   end
 
   defp spam_referrer?(_), do: false
-
-  defp emit_telemetry_buffered() do
-    :telemetry.execute(telemetry_event_buffered(), %{}, %{})
-  end
-
-  defp emit_telemetry_dropped(reason) do
-    :telemetry.execute(telemetry_event_dropped(), %{}, %{reason: reason})
-  end
 end

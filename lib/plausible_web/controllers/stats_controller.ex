@@ -60,11 +60,12 @@ defmodule PlausibleWeb.StatsController do
         conn
         |> assign(:skip_plausible_tracking, !demo)
         |> remove_email_report_banner(site)
-        |> put_resp_header("x-robots-tag", "noindex")
+        |> put_resp_header("x-robots-tag", "noindex, nofollow")
         |> render("stats.html",
           site: site,
           has_goals: Plausible.Sites.has_goals?(site),
           stats_start_date: stats_start_date,
+          native_stats_start_date: NaiveDateTime.to_date(site.native_stats_start_at),
           title: "Plausible · " <> site.domain,
           offer_email_report: offer_email_report,
           demo: demo,
@@ -95,13 +96,26 @@ defmodule PlausibleWeb.StatsController do
     site = conn.assigns[:site]
     query = Query.from(site, params) |> Filters.add_prefix()
 
-    metrics = [:visitors, :pageviews, :bounce_rate, :visit_duration]
+    metrics =
+      if query.filters["event:goal"] do
+        [:visitors]
+      else
+        [:visitors, :pageviews, :visits, :views_per_visit, :bounce_rate, :visit_duration]
+      end
+
     graph = Plausible.Stats.timeseries(site, query, metrics)
-    headers = [:date | metrics]
+    columns = [:date | metrics]
+
+    column_headers =
+      if query.filters["event:goal"] do
+        [:date, :unique_conversions]
+      else
+        columns
+      end
 
     visitors =
-      Enum.map(graph, fn row -> Enum.map(headers, &row[&1]) end)
-      |> (fn data -> [headers | data] end).()
+      Enum.map(graph, fn row -> Enum.map(columns, &row[&1]) end)
+      |> (fn data -> [column_headers | data] end).()
       |> CSV.encode()
       |> Enum.join()
 
@@ -111,30 +125,33 @@ defmodule PlausibleWeb.StatsController do
     params = Map.merge(params, %{"limit" => "300", "csv" => "True", "detailed" => "True"})
     limited_params = Map.merge(params, %{"limit" => "100"})
 
-    csvs = [
-      {'sources.csv', fn -> Api.StatsController.sources(conn, params) end},
-      {'utm_mediums.csv', fn -> Api.StatsController.utm_mediums(conn, params) end},
-      {'utm_sources.csv', fn -> Api.StatsController.utm_sources(conn, params) end},
-      {'utm_campaigns.csv', fn -> Api.StatsController.utm_campaigns(conn, params) end},
-      {'utm_contents.csv', fn -> Api.StatsController.utm_contents(conn, params) end},
-      {'utm_terms.csv', fn -> Api.StatsController.utm_terms(conn, params) end},
-      {'pages.csv', fn -> Api.StatsController.pages(conn, limited_params) end},
-      {'entry_pages.csv', fn -> Api.StatsController.entry_pages(conn, params) end},
-      {'exit_pages.csv', fn -> Api.StatsController.exit_pages(conn, limited_params) end},
-      {'countries.csv', fn -> Api.StatsController.countries(conn, params) end},
-      {'regions.csv', fn -> Api.StatsController.regions(conn, params) end},
-      {'cities.csv', fn -> Api.StatsController.cities(conn, params) end},
-      {'browsers.csv', fn -> Api.StatsController.browsers(conn, params) end},
-      {'operating_systems.csv', fn -> Api.StatsController.operating_systems(conn, params) end},
-      {'devices.csv', fn -> Api.StatsController.screen_sizes(conn, params) end},
-      {'conversions.csv', fn -> Api.StatsController.conversions(conn, params) end},
-      {'prop_breakdown.csv', fn -> Api.StatsController.all_props_breakdown(conn, params) end}
-    ]
+    csvs = %{
+      'sources.csv' => fn -> Api.StatsController.sources(conn, params) end,
+      'utm_mediums.csv' => fn -> Api.StatsController.utm_mediums(conn, params) end,
+      'utm_sources.csv' => fn -> Api.StatsController.utm_sources(conn, params) end,
+      'utm_campaigns.csv' => fn -> Api.StatsController.utm_campaigns(conn, params) end,
+      'utm_contents.csv' => fn -> Api.StatsController.utm_contents(conn, params) end,
+      'utm_terms.csv' => fn -> Api.StatsController.utm_terms(conn, params) end,
+      'pages.csv' => fn -> Api.StatsController.pages(conn, limited_params) end,
+      'entry_pages.csv' => fn -> Api.StatsController.entry_pages(conn, params) end,
+      'exit_pages.csv' => fn -> Api.StatsController.exit_pages(conn, limited_params) end,
+      'countries.csv' => fn -> Api.StatsController.countries(conn, params) end,
+      'regions.csv' => fn -> Api.StatsController.regions(conn, params) end,
+      'cities.csv' => fn -> Api.StatsController.cities(conn, params) end,
+      'browsers.csv' => fn -> Api.StatsController.browsers(conn, params) end,
+      'operating_systems.csv' => fn -> Api.StatsController.operating_systems(conn, params) end,
+      'devices.csv' => fn -> Api.StatsController.screen_sizes(conn, params) end,
+      'conversions.csv' => fn -> Api.StatsController.conversions(conn, params) end,
+      'prop_breakdown.csv' => fn -> Api.StatsController.all_props_breakdown(conn, params) end
+    }
+
+    csv_values =
+      Map.values(csvs)
+      |> Plausible.ClickhouseRepo.parallel_tasks()
 
     csvs =
-      csvs
-      |> Enum.map(fn {file, task} -> {file, Task.async(task)} end)
-      |> Enum.map(fn {file, task} -> {file, Task.await(task)} end)
+      Map.keys(csvs)
+      |> Enum.zip(csv_values)
 
     csvs = [{'visitors.csv', visitors} | csvs]
 
@@ -269,12 +286,13 @@ defmodule PlausibleWeb.StatsController do
       !shared_link.site.locked ->
         conn
         |> assign(:skip_plausible_tracking, true)
-        |> put_resp_header("x-robots-tag", "noindex")
+        |> put_resp_header("x-robots-tag", "noindex, nofollow")
         |> delete_resp_header("x-frame-options")
         |> render("stats.html",
           site: shared_link.site,
           has_goals: Sites.has_goals?(shared_link.site),
           stats_start_date: shared_link.site.stats_start_date,
+          native_stats_start_date: NaiveDateTime.to_date(shared_link.site.native_stats_start_at),
           title: "Plausible · " <> shared_link.site.domain,
           offer_email_report: false,
           demo: false,
@@ -306,21 +324,18 @@ defmodule PlausibleWeb.StatsController do
 
   defp shared_link_cookie_name(slug), do: "shared-link-" <> slug
 
-  defp get_flags(user) do
-    %{
-      custom_dimension_filter: FunWithFlags.enabled?(:custom_dimension_filter, for: user)
-    }
+  defp get_flags(_user) do
+    %{}
   end
 
   defp is_dbip() do
-    if Application.get_env(:plausible, :is_selfhost) do
-      case Geolix.metadata(where: :geolocation) do
-        %{database_type: type} ->
+    is_or_nil =
+      if Application.get_env(:plausible, :is_selfhost) do
+        if type = Plausible.Geo.database_type() do
           String.starts_with?(type, "DBIP")
-
-        _ ->
-          false
+        end
       end
-    end
+
+    !!is_or_nil
   end
 end

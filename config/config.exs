@@ -1,9 +1,15 @@
 import Config
 
 config :plausible,
-  ecto_repos: [Plausible.Repo, Plausible.ClickhouseRepo]
+  ecto_repos: [Plausible.Repo, Plausible.IngestRepo]
 
-config :plausible, PlausibleWeb.Endpoint, pubsub_server: Plausible.PubSub
+config :plausible, PlausibleWeb.Endpoint,
+  pubsub_server: Plausible.PubSub,
+  render_errors: [
+    view: PlausibleWeb.ErrorView,
+    layout: {PlausibleWeb.LayoutView, "base_error.html"},
+    accepts: ~w(html json)
+  ]
 
 # Configures Elixir's Logger
 config :logger, :console,
@@ -45,5 +51,11 @@ config :plausible,
   sites_by_domain_cache_enabled: true,
   sites_by_domain_cache_refresh_interval_max_jitter: :timer.seconds(5),
   sites_by_domain_cache_refresh_interval: :timer.minutes(15)
+
+config :plausible, Plausible.Ingestion.Counters, enabled: true
+
+config :ex_cldr,
+  default_locale: "en",
+  default_backend: Plausible.Cldr
 
 import_config "#{config_env()}.exs"

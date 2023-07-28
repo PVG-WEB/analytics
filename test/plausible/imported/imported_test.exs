@@ -7,7 +7,7 @@ defmodule Plausible.ImportedTest do
   defp import_data(ga_data, site_id, table_name) do
     ga_data
     |> Plausible.Imported.from_google_analytics(site_id, table_name)
-    |> then(&Plausible.ClickhouseRepo.insert_all(table_name, &1))
+    |> then(&Plausible.Google.Buffer.insert_all(table_name, &1))
   end
 
   describe "Parse and import third party data fetched from Google Analytics" do
@@ -236,6 +236,7 @@ defmodule Plausible.ImportedTest do
 
       assert conn |> json_response(200) |> Enum.sort() == [
                %{"name" => "A Nice Newsletter", "visitors" => 1},
+               %{"name" => "Direct / None", "visitors" => 1},
                %{"name" => "DuckDuckGo", "visitors" => 2},
                %{"name" => "Google", "visitors" => 4},
                %{"name" => "Twitter", "visitors" => 1}
@@ -305,6 +306,12 @@ defmodule Plausible.ImportedTest do
                  "name" => "social",
                  "visit_duration" => 20,
                  "visitors" => 3
+               },
+               %{
+                 "bounce_rate" => 100.0,
+                 "name" => "Direct / None",
+                 "visit_duration" => 60.0,
+                 "visitors" => 1
                }
              ]
     end
@@ -388,6 +395,12 @@ defmodule Plausible.ImportedTest do
                  "visitors" => 2,
                  "bounce_rate" => 100.0,
                  "visit_duration" => 50.0
+               },
+               %{
+                 "bounce_rate" => 0.0,
+                 "name" => "Direct / None",
+                 "visit_duration" => 100.0,
+                 "visitors" => 1
                }
              ]
     end
@@ -472,6 +485,12 @@ defmodule Plausible.ImportedTest do
                  "visitors" => 2,
                  "bounce_rate" => 100.0,
                  "visit_duration" => 50.0
+               },
+               %{
+                 "bounce_rate" => 0.0,
+                 "name" => "Direct / None",
+                 "visit_duration" => 100.0,
+                 "visitors" => 1
                }
              ]
     end
@@ -555,6 +574,12 @@ defmodule Plausible.ImportedTest do
                  "visitors" => 2,
                  "bounce_rate" => 100.0,
                  "visit_duration" => 50.0
+               },
+               %{
+                 "bounce_rate" => 0.0,
+                 "name" => "Direct / None",
+                 "visit_duration" => 100.0,
+                 "visitors" => 1
                }
              ]
     end
@@ -731,7 +756,7 @@ defmodule Plausible.ImportedTest do
              ]
     end
 
-    test "Location data imported from Google Analytics", %{conn: conn, site: site} do
+    test "imports city data from Google Analytics", %{conn: conn, site: site} do
       populate_stats(site, [
         build(:pageview,
           country_code: "EE",
@@ -752,6 +777,7 @@ defmodule Plausible.ImportedTest do
           %{
             dimensions: %{
               "ga:countryIsoCode" => "EE",
+              "ga:city" => "Tartu",
               "ga:date" => "20210101",
               "ga:regionIsoCode" => "Tartumaa"
             },
@@ -765,6 +791,75 @@ defmodule Plausible.ImportedTest do
           %{
             dimensions: %{
               "ga:countryIsoCode" => "GB",
+              "ga:city" => "Edinburgh",
+              "ga:date" => "20210101",
+              "ga:regionIsoCode" => "Midlothian"
+            },
+            metrics: %{
+              "ga:bounces" => "0",
+              "ga:sessionDuration" => "10",
+              "ga:sessions" => "1",
+              "ga:users" => "1"
+            }
+          }
+        ],
+        site.id,
+        "imported_locations"
+      )
+
+      conn =
+        get(
+          conn,
+          "/api/stats/#{site.domain}/cities?period=day&date=2021-01-01&with_imported=true"
+        )
+
+      assert json_response(conn, 200) == [
+               %{"code" => 588_335, "name" => "Tartu", "visitors" => 1, "country_flag" => "🇪🇪"},
+               %{
+                 "code" => 2_650_225,
+                 "name" => "Edinburgh",
+                 "visitors" => 1,
+                 "country_flag" => "🇬🇧"
+               }
+             ]
+    end
+
+    test "imports country data from Google Analytics", %{conn: conn, site: site} do
+      populate_stats(site, [
+        build(:pageview,
+          country_code: "EE",
+          timestamp: ~N[2021-01-01 00:15:00]
+        ),
+        build(:pageview,
+          country_code: "EE",
+          timestamp: ~N[2021-01-01 00:15:00]
+        ),
+        build(:pageview,
+          country_code: "GB",
+          timestamp: ~N[2021-01-01 00:15:00]
+        )
+      ])
+
+      import_data(
+        [
+          %{
+            dimensions: %{
+              "ga:countryIsoCode" => "EE",
+              "ga:city" => "Tartu",
+              "ga:date" => "20210101",
+              "ga:regionIsoCode" => "Tartumaa"
+            },
+            metrics: %{
+              "ga:bounces" => "0",
+              "ga:sessionDuration" => "10",
+              "ga:sessions" => "1",
+              "ga:users" => "1"
+            }
+          },
+          %{
+            dimensions: %{
+              "ga:countryIsoCode" => "GB",
+              "ga:city" => "Edinburgh",
               "ga:date" => "20210101",
               "ga:regionIsoCode" => "Midlothian"
             },
@@ -1024,26 +1119,12 @@ defmodule Plausible.ImportedTest do
 
       assert %{
                "top_stats" => [
-                 %{
-                   "change" => 100,
-                   "name" => "Unique visitors",
-                   "value" => 1
-                 },
-                 %{
-                   "change" => 100,
-                   "name" => "Total pageviews",
-                   "value" => 1
-                 },
-                 %{
-                   "change" => nil,
-                   "name" => "Bounce rate",
-                   "value" => 0
-                 },
-                 %{
-                   "change" => 100,
-                   "name" => "Visit duration",
-                   "value" => 60
-                 }
+                 %{"name" => "Unique visitors", "value" => 1},
+                 %{"name" => "Total visits", "value" => 1},
+                 %{"name" => "Total pageviews", "value" => 1},
+                 %{"name" => "Views per visit", "value" => 0.0},
+                 %{"name" => "Bounce rate", "value" => 0},
+                 %{"name" => "Visit duration", "value" => 60}
                ]
              } = json_response(conn, 200)
     end

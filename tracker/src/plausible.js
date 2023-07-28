@@ -11,8 +11,9 @@
   {{/if}}
   var endpoint = scriptEl.getAttribute('data-api') || defaultEndpoint(scriptEl)
 
-  function warn(reason) {
-    console.warn('Ignoring Event: ' + reason);
+  function onIgnoredEvent(reason, options) {
+    if (reason) console.warn('Ignoring Event: ' + reason);
+    options && options.callback && options.callback()
   }
 
   function defaultEndpoint(el) {
@@ -29,12 +30,16 @@
 
   function trigger(eventName, options) {
     {{#unless local}}
-    if (/^localhost$|^127(\.[0-9]+){0,2}\.[0-9]+$|^\[::1?\]$/.test(location.hostname) || location.protocol === 'file:') return warn('localhost');
-    if (window._phantom || window.__nightmare || window.navigator.webdriver || window.Cypress) return;
+    if (/^localhost$|^127(\.[0-9]+){0,2}\.[0-9]+$|^\[::1?\]$/.test(location.hostname) || location.protocol === 'file:') {
+      return onIgnoredEvent('localhost', options)
+    }
+    if (window._phantom || window.__nightmare || window.navigator.webdriver || window.Cypress) {
+      return onIgnoredEvent(null, options)
+    }
     {{/unless}}
     try {
       if (window.localStorage.plausible_ignore === 'true') {
-        return warn('localStorage flag')
+        return onIgnoredEvent('localStorage flag', options)
       }
     } catch (e) {
 
@@ -47,7 +52,7 @@
       var isIncluded = !dataIncludeAttr || (dataIncludeAttr && dataIncludeAttr.split(',').some(pathMatches))
       var isExcluded = dataExcludeAttr && dataExcludeAttr.split(',').some(pathMatches)
 
-      if (!isIncluded || isExcluded) return warn('exclusion rule')
+      if (!isIncluded || isExcluded) return onIgnoredEvent('exclusion rule', options)
     }
 
     function pathMatches(wildcardPath) {
@@ -70,7 +75,6 @@
     {{/if}}
     payload.d = scriptEl.getAttribute('data-domain')
     payload.r = document.referrer || null
-    payload.w = window.innerWidth
     if (options && options.meta) {
       payload.m = JSON.stringify(options.meta)
     }
@@ -78,14 +82,14 @@
       payload.p = options.props
     }
 
-    {{#if dimensions}}
-    var dimensionAttributes = scriptEl.getAttributeNames().filter(function (name) {
+    {{#if pageview_props}}
+    var propAttributes = scriptEl.getAttributeNames().filter(function (name) {
       return name.substring(0, 6) === 'event-'
     })
 
     var props = payload.p || {}
 
-    dimensionAttributes.forEach(function(attribute) {
+    propAttributes.forEach(function(attribute) {
       var propKey = attribute.replace('event-', '')
       var propValue = scriptEl.getAttribute(attribute)
       props[propKey] = props[propKey] || propValue

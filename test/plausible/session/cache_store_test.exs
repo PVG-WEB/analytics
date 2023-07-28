@@ -1,14 +1,16 @@
 defmodule Plausible.Session.CacheStoreTest do
   use Plausible.DataCase
-  import Double
-  alias Plausible.Session.{CacheStore, WriteBuffer}
+  alias Plausible.Session.CacheStore
+
+  defmodule FakeBuffer do
+    def insert(sessions) do
+      send(self(), {WriteBuffer, :insert, [sessions]})
+      {:ok, sessions}
+    end
+  end
 
   setup do
-    buffer =
-      WriteBuffer
-      |> stub(:insert, fn _sessions -> nil end)
-
-    [buffer: buffer]
+    [buffer: FakeBuffer]
   end
 
   test "creates a session from an event", %{buffer: buffer} do
@@ -37,7 +39,9 @@ defmodule Plausible.Session.CacheStoreTest do
     assert_receive({WriteBuffer, :insert, [sessions]})
     assert [session] = sessions
     assert session.hostname == event.hostname
-    assert session.domain == event.domain
+
+    assert session.site_id == event.site_id
+
     assert session.user_id == event.user_id
     assert session.entry_page == event.pathname
     assert session.exit_page == event.pathname
@@ -68,12 +72,9 @@ defmodule Plausible.Session.CacheStoreTest do
     timestamp = Timex.now()
     event1 = build(:event, name: "pageview", timestamp: timestamp |> Timex.shift(seconds: -10))
 
-    event2 =
-      build(:event,
-        domain: event1.domain,
-        user_id: event1.user_id,
-        name: "pageview",
-        timestamp: timestamp,
+    event2 = %{
+      event1
+      | timestamp: timestamp,
         country_code: "US",
         subdivision1_code: "SUB1",
         subdivision2_code: "SUB2",
@@ -83,7 +84,7 @@ defmodule Plausible.Session.CacheStoreTest do
         operating_system_version: "11",
         browser: "Firefox",
         browser_version: "10"
-      )
+    }
 
     CacheStore.on_event(event1, nil, buffer)
     CacheStore.on_event(event2, nil, buffer)
@@ -107,13 +108,7 @@ defmodule Plausible.Session.CacheStoreTest do
     timestamp = Timex.now()
     event1 = build(:event, name: "pageview", timestamp: timestamp |> Timex.shift(seconds: 10))
 
-    event2 =
-      build(:event,
-        domain: event1.domain,
-        user_id: event1.user_id,
-        name: "pageview",
-        timestamp: timestamp
-      )
+    event2 = %{event1 | timestamp: timestamp}
 
     CacheStore.on_event(event1, nil, buffer)
     CacheStore.on_event(event2, nil, buffer)

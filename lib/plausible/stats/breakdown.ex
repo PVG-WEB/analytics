@@ -1,22 +1,26 @@
 defmodule Plausible.Stats.Breakdown do
   use Plausible.ClickhouseRepo
-  import Plausible.Stats.{Base, Imported}
+  import Plausible.Stats.{Base, Imported, Util}
+  require OpenTelemetry.Tracer, as: Tracer
   alias Plausible.Stats.Query
   alias Plausible.Goals
   @no_ref "Direct / None"
+  @not_set "(not set)"
 
   @event_metrics [:visitors, :pageviews, :events]
   @session_metrics [:visits, :bounce_rate, :visit_duration]
-  @event_props ["event:page", "event:page_match", "event:name"]
+  @event_props Plausible.Stats.Props.event_props()
 
-  def breakdown(site, query, "event:goal", metrics, pagination) do
+  def breakdown(site, query, "event:goal" = property, metrics, pagination) do
     {event_goals, pageview_goals} =
-      site.domain
-      |> Goals.for_domain()
+      site
+      |> Goals.for_site()
       |> Enum.split_with(fn goal -> goal.event_name end)
 
     events = Enum.map(event_goals, & &1.event_name)
     event_query = %Query{query | filters: Map.put(query.filters, "event:name", {:member, events})}
+
+    trace(query, property, metrics)
 
     event_results =
       if Enum.any?(event_goals) do
@@ -40,14 +44,14 @@ defmodule Plausible.Stats.Breakdown do
           offset: ^offset,
           where:
             fragment(
-              "notEmpty(multiMatchAllIndices(?, array(?)) as indices)",
+              "notEmpty(multiMatchAllIndices(?, ?) as indices)",
               e.pathname,
               ^page_regexes
             ),
           group_by: fragment("index"),
           select: %{
             index: fragment("arrayJoin(indices) as index"),
-            goal: fragment("concat('Visit ', array(?)[index])", ^page_exprs)
+            goal: fragment("concat('Visit ', ?[index])", ^page_exprs)
           }
         )
         |> select_event_metrics(metrics)
@@ -60,16 +64,14 @@ defmodule Plausible.Stats.Breakdown do
     zip_results(event_results, page_results, :goal, metrics)
   end
 
-  def breakdown(site, query, "event:props:" <> custom_prop, metrics, pagination) do
+  def breakdown(site, query, "event:props:" <> custom_prop = property, metrics, pagination) do
     {limit, _} = pagination
 
     none_result =
-      if !Enum.any?(query.filters, fn {key, _} -> String.starts_with?(key, "event:props") end) do
-        none_filters = Map.put(query.filters, "event:props:" <> custom_prop, {:is, "(none)"})
-        none_query = %Query{query | filters: none_filters}
+      if include_none_result?(query.filters[property]) do
+        none_query = Query.put_filter(query, property, {:is, "(none)"})
 
         from(e in base_event_query(site, none_query),
-          order_by: [desc: fragment("uniq(?)", e.user_id)],
           select: %{},
           select_merge: %{^custom_prop => "(none)"},
           having: fragment("uniq(?)", e.user_id) > 0
@@ -80,18 +82,21 @@ defmodule Plausible.Stats.Breakdown do
         []
       end
 
-    results = breakdown_events(site, query, "event:props:" <> custom_prop, metrics, pagination)
+    trace(query, property, metrics)
 
-    zipped = zip_results(none_result, results, custom_prop, metrics)
+    results =
+      breakdown_events(site, query, "event:props:" <> custom_prop, metrics, pagination)
+      |> Kernel.++(none_result)
+      |> Enum.sort_by(& &1[sorting_key(metrics)], :desc)
 
-    if Enum.find_index(zipped, fn value -> value[custom_prop] == "(none)" end) == limit do
-      Enum.slice(zipped, 0..(limit - 1))
+    if Enum.find_index(results, fn value -> value[custom_prop] == "(none)" end) == limit do
+      Enum.slice(results, 0..(limit - 1))
     else
-      zipped
+      results
     end
   end
 
-  def breakdown(site, query, "event:page", metrics, pagination) do
+  def breakdown(site, query, "event:page" = property, metrics, pagination) do
     event_metrics = Enum.filter(metrics, &(&1 in @event_metrics))
     session_metrics = Enum.filter(metrics, &(&1 in @session_metrics))
 
@@ -118,61 +123,40 @@ defmodule Plausible.Stats.Breakdown do
           Query.put_filter(query, "visit:entry_page", {:member, Enum.map(pages, & &1[:page])})
       end
 
-    {limit, _page} = pagination
+    trace(new_query, property, metrics)
 
-    session_result =
-      breakdown_sessions(site, new_query, "visit:entry_page", session_metrics, {limit, 1})
-      |> transform_keys(%{entry_page: :page})
+    if Enum.any?(event_metrics) && Enum.empty?(event_result) do
+      []
+    else
+      {limit, _page} = pagination
 
-    metrics = metrics ++ [:page]
+      session_result =
+        breakdown_sessions(site, new_query, "visit:entry_page", session_metrics, {limit, 1})
+        |> transform_keys(%{entry_page: :page})
 
-    zip_results(
-      event_result,
-      session_result,
-      :page,
-      metrics
-    )
-    |> Enum.map(&Map.take(&1, metrics))
+      metrics = metrics ++ [:page]
+
+      zip_results(
+        event_result,
+        session_result,
+        :page,
+        metrics
+      )
+      |> Enum.map(&Map.take(&1, metrics))
+    end
   end
 
   def breakdown(site, query, property, metrics, pagination) when property in @event_props do
+    trace(query, property, metrics)
     breakdown_events(site, query, property, metrics, pagination)
   end
 
-  def breakdown(site, query, property, metrics, pagination)
-      when property in [
-             "visit:source",
-             "visit:utm_medium",
-             "visit:utm_source",
-             "visit:utm_campaign",
-             "visit:utm_content",
-             "visit:utm_term"
-           ] do
-    query =
-      query
-      |> Query.treat_page_filter_as_entry_page()
-      |> Query.treat_prop_filter_as_entry_prop()
-
-    breakdown_sessions(site, query, property, metrics, pagination)
-  end
-
   def breakdown(site, query, property, metrics, pagination) do
+    trace(query, property, metrics)
     breakdown_sessions(site, query, property, metrics, pagination)
   end
 
   defp zip_results(event_result, session_result, property, metrics) do
-    sort_by = if Enum.member?(metrics, :visitors), do: :visitors, else: List.first(metrics)
-
-    property =
-      if is_binary(property) do
-        property
-        |> String.trim_leading("event:")
-        |> String.trim_leading("visit:")
-        |> String.trim_leading("props:")
-      else
-        property
-      end
-
     null_row = Enum.map(metrics, fn metric -> {metric, nil} end) |> Enum.into(%{})
 
     prop_values =
@@ -183,11 +167,18 @@ defmodule Plausible.Stats.Breakdown do
       event_row = Enum.find(event_result, fn row -> row[property] == value end) || %{}
       session_row = Enum.find(session_result, fn row -> row[property] == value end) || %{}
 
-      Map.merge(null_row, event_row)
+      null_row
+      |> Map.merge(event_row)
       |> Map.merge(session_row)
     end)
-    |> Enum.sort_by(fn row -> row[sort_by] end, :desc)
+    |> Enum.sort_by(& &1[sorting_key(metrics)], :desc)
   end
+
+  defp include_none_result?({:is, value}), do: value == "(none)"
+  defp include_none_result?({:is_not, "(none)"}), do: false
+  defp include_none_result?({:member, values}), do: Enum.member?(values, "(none)")
+  defp include_none_result?({:not_member, values}), do: !Enum.member?(values, "(none)")
+  defp include_none_result?(_), do: true
 
   defp breakdown_sessions(_, _, _, [], _), do: []
 
@@ -198,12 +189,12 @@ defmodule Plausible.Stats.Breakdown do
     )
     |> filter_converted_sessions(site, query)
     |> do_group_by(property)
-    |> select_session_metrics(metrics)
+    |> select_session_metrics(metrics, query)
     |> merge_imported(site, query, property, metrics)
     |> apply_pagination(pagination)
     |> ClickhouseRepo.all()
     |> transform_keys(%{operating_system: :os})
-    |> maybe_remove_visits_metric(metrics)
+    |> remove_internal_visits_metric(metrics)
   end
 
   defp breakdown_events(_, _, _, [], _), do: []
@@ -246,6 +237,9 @@ defmodule Plausible.Stats.Breakdown do
         "round(sum(td)/count(case when p2 != p then 1 end))"
       end
 
+    pages_idx = length(base_query_raw_params)
+    params = base_query_raw_params ++ [pages]
+
     time_query = "
       SELECT
         p,
@@ -262,11 +256,11 @@ defmodule Plausible.Stats.Breakdown do
             neighbor(p, 1) as p2,
             neighbor(s, 1) as s2
           FROM (#{base_query_raw}))
-        WHERE s=s2 AND p IN tuple(?)
+        WHERE s=s2 AND p IN {$#{pages_idx}:Array(String)}
         GROUP BY p,p2,s)
       GROUP BY p"
 
-    {:ok, res} = ClickhouseRepo.query(time_query, base_query_raw_params ++ [pages])
+    {:ok, res} = ClickhouseRepo.query(time_query, params)
 
     if query.include_imported do
       # Imported page views have pre-calculated values
@@ -302,59 +296,66 @@ defmodule Plausible.Stats.Breakdown do
     end
   end
 
-  defp do_group_by(
-         %Ecto.Query{
-           from: %Ecto.Query.FromExpr{source: {"events", _}},
-           joins: [%Ecto.Query.JoinExpr{source: {"meta", _}}]
-         } = q,
-         "event:props:" <> prop
-       ) do
-    from(
-      [e, meta] in q,
-      group_by: e.name,
-      where: meta.key == ^prop,
-      group_by: meta.value,
-      select_merge: %{^prop => meta.value}
+  defp joins_table?(ecto_q, table) do
+    Enum.any?(
+      ecto_q.joins,
+      fn
+        %Ecto.Query.JoinExpr{source: {^table, _}} -> true
+        _ -> false
+      end
     )
   end
 
   defp do_group_by(
-         %Ecto.Query{from: %Ecto.Query.FromExpr{source: {"events", _}}} = q,
+         %Ecto.Query{from: %Ecto.Query.FromExpr{source: {"events" <> _, _}}} = q,
          "event:props:" <> prop
        ) do
+    q =
+      if joins_table?(q, "meta") do
+        q
+      else
+        from(
+          e in q,
+          inner_lateral_join: meta in fragment("meta"),
+          as: :meta
+        )
+      end
+
     from(
-      e in q,
-      inner_lateral_join: meta in fragment("meta"),
+      [e, meta: meta] in q,
       where: meta.key == ^prop,
       group_by: meta.value,
-      select_merge: %{^prop => meta.value}
+      select_merge: %{^prop => meta.value},
+      order_by: {:asc, meta.value}
     )
   end
 
   defp do_group_by(
-         %Ecto.Query{from: %Ecto.Query.FromExpr{source: {"events", _}}} = q,
+         %Ecto.Query{from: %Ecto.Query.FromExpr{source: {"events" <> _, _}}} = q,
          "event:name"
        ) do
     from(
       e in q,
       group_by: e.name,
-      select_merge: %{name: e.name}
+      select_merge: %{name: e.name},
+      order_by: {:asc, e.name}
     )
   end
 
   defp do_group_by(
-         %Ecto.Query{from: %Ecto.Query.FromExpr{source: {"events", _}}} = q,
+         %Ecto.Query{from: %Ecto.Query.FromExpr{source: {"events" <> _, _}}} = q,
          "event:page"
        ) do
     from(
       e in q,
       group_by: e.pathname,
-      select_merge: %{page: e.pathname}
+      select_merge: %{page: e.pathname},
+      order_by: {:asc, e.pathname}
     )
   end
 
   defp do_group_by(
-         %Ecto.Query{from: %Ecto.Query.FromExpr{source: {"events", _}}} = q,
+         %Ecto.Query{from: %Ecto.Query.FromExpr{source: {"events" <> _, _}}} = q,
          "event:page_match"
        ) do
     case Map.get(q, :__private_match_sources__) do
@@ -364,8 +365,9 @@ defmodule Plausible.Stats.Breakdown do
           group_by: fragment("index"),
           select_merge: %{
             index: fragment("arrayJoin(indices) as index"),
-            page_match: fragment("array(?)[index]", ^match_exprs)
-          }
+            page_match: fragment("?[index]", ^match_exprs)
+          },
+          order_by: {:asc, fragment("index")}
         )
     end
   end
@@ -376,7 +378,8 @@ defmodule Plausible.Stats.Breakdown do
       group_by: s.referrer_source,
       select_merge: %{
         source: fragment("if(empty(?), ?, ?)", s.referrer_source, @no_ref, s.referrer_source)
-      }
+      },
+      order_by: {:asc, s.referrer_source}
     )
   end
 
@@ -385,7 +388,8 @@ defmodule Plausible.Stats.Breakdown do
       s in q,
       where: s.country_code != "\0\0" and s.country_code != "ZZ",
       group_by: s.country_code,
-      select_merge: %{country: s.country_code}
+      select_merge: %{country: s.country_code},
+      order_by: {:asc, s.country_code}
     )
   end
 
@@ -394,7 +398,8 @@ defmodule Plausible.Stats.Breakdown do
       s in q,
       where: s.subdivision1_code != "",
       group_by: s.subdivision1_code,
-      select_merge: %{region: s.subdivision1_code}
+      select_merge: %{region: s.subdivision1_code},
+      order_by: {:asc, s.subdivision1_code}
     )
   end
 
@@ -403,7 +408,8 @@ defmodule Plausible.Stats.Breakdown do
       s in q,
       where: s.city_geoname_id != 0,
       group_by: s.city_geoname_id,
-      select_merge: %{city: s.city_geoname_id}
+      select_merge: %{city: s.city_geoname_id},
+      order_by: {:asc, s.city_geoname_id}
     )
   end
 
@@ -411,7 +417,8 @@ defmodule Plausible.Stats.Breakdown do
     from(
       s in q,
       group_by: s.entry_page,
-      select_merge: %{entry_page: s.entry_page}
+      select_merge: %{entry_page: s.entry_page},
+      order_by: {:asc, s.entry_page}
     )
   end
 
@@ -419,7 +426,8 @@ defmodule Plausible.Stats.Breakdown do
     from(
       s in q,
       group_by: s.exit_page,
-      select_merge: %{exit_page: s.exit_page}
+      select_merge: %{exit_page: s.exit_page},
+      order_by: {:asc, s.exit_page}
     )
   end
 
@@ -429,7 +437,8 @@ defmodule Plausible.Stats.Breakdown do
       group_by: s.referrer,
       select_merge: %{
         referrer: fragment("if(empty(?), ?, ?)", s.referrer, @no_ref, s.referrer)
-      }
+      },
+      order_by: {:asc, s.referrer}
     )
   end
 
@@ -487,7 +496,10 @@ defmodule Plausible.Stats.Breakdown do
     from(
       s in q,
       group_by: s.screen_size,
-      select_merge: %{device: s.screen_size}
+      select_merge: %{
+        device: fragment("if(empty(?), ?, ?)", s.screen_size, @not_set, s.screen_size)
+      },
+      order_by: {:asc, s.screen_size}
     )
   end
 
@@ -495,7 +507,11 @@ defmodule Plausible.Stats.Breakdown do
     from(
       s in q,
       group_by: s.operating_system,
-      select_merge: %{operating_system: s.operating_system}
+      select_merge: %{
+        operating_system:
+          fragment("if(empty(?), ?, ?)", s.operating_system, @not_set, s.operating_system)
+      },
+      order_by: {:asc, s.operating_system}
     )
   end
 
@@ -503,7 +519,16 @@ defmodule Plausible.Stats.Breakdown do
     from(
       s in q,
       group_by: s.operating_system_version,
-      select_merge: %{os_version: s.operating_system_version}
+      select_merge: %{
+        os_version:
+          fragment(
+            "if(empty(?), ?, ?)",
+            s.operating_system_version,
+            @not_set,
+            s.operating_system_version
+          )
+      },
+      order_by: {:asc, s.operating_system_version}
     )
   end
 
@@ -511,7 +536,10 @@ defmodule Plausible.Stats.Breakdown do
     from(
       s in q,
       group_by: s.browser,
-      select_merge: %{browser: s.browser}
+      select_merge: %{
+        browser: fragment("if(empty(?), ?, ?)", s.browser, @not_set, s.browser)
+      },
+      order_by: {:asc, s.browser}
     )
   end
 
@@ -519,8 +547,16 @@ defmodule Plausible.Stats.Breakdown do
     from(
       s in q,
       group_by: s.browser_version,
-      select_merge: %{browser_version: s.browser_version}
+      select_merge: %{
+        browser_version:
+          fragment("if(empty(?), ?, ?)", s.browser_version, @not_set, s.browser_version)
+      },
+      order_by: {:asc, s.browser_version}
     )
+  end
+
+  defp sorting_key(metrics) do
+    if Enum.member?(metrics, :visitors), do: :visitors, else: List.first(metrics)
   end
 
   defp transform_keys(results, keys_to_replace) do
@@ -532,23 +568,20 @@ defmodule Plausible.Stats.Breakdown do
     end)
   end
 
-  defp maybe_remove_visits_metric(results, metrics) do
-    # "visits" is fetched when querying bounce rate and visit duration, as it
-    # is needed to calculate these from imported data. Let's remove it from the
-    # result if it wasn't requested.
-    if (:bounce_rate in metrics or :visit_duration in metrics) and :visits not in metrics do
-      results
-      |> Enum.map(&Map.delete(&1, :visits))
-    else
-      results
-    end
-  end
-
   defp apply_pagination(q, {limit, page}) do
     offset = (page - 1) * limit
 
     q
     |> Ecto.Query.limit(^limit)
     |> Ecto.Query.offset(^offset)
+  end
+
+  defp trace(query, property, metrics) do
+    Query.trace(query)
+
+    Tracer.set_attributes([
+      {"plausible.query.breakdown_property", property},
+      {"plausible.query.breakdown_metrics", metrics}
+    ])
   end
 end

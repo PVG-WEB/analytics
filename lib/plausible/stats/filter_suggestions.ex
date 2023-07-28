@@ -21,8 +21,8 @@ defmodule Plausible.Stats.FilterSuggestions do
     |> Enum.slice(0..24)
     |> Enum.map(fn match ->
       %{
-        code: match.alpha_2,
-        name: match.name
+        value: match.alpha_2,
+        label: match.name
       }
     end)
   end
@@ -41,8 +41,8 @@ defmodule Plausible.Stats.FilterSuggestions do
       subdiv = Location.get_subdivision(c)
 
       %{
-        code: c,
-        name: subdiv.name
+        value: c,
+        label: subdiv.name
       }
     end)
   end
@@ -64,8 +64,8 @@ defmodule Plausible.Stats.FilterSuggestions do
     |> Enum.slice(0..24)
     |> Enum.map(fn subdiv ->
       %{
-        code: subdiv.code,
-        name: subdiv.name
+        value: subdiv.code,
+        label: subdiv.name
       }
     end)
   end
@@ -84,8 +84,8 @@ defmodule Plausible.Stats.FilterSuggestions do
       city = Location.get_city(c)
 
       %{
-        code: Integer.to_string(c),
-        name: (city && city.name) || "N/A"
+        value: Integer.to_string(c),
+        label: (city && city.name) || "N/A"
       }
     end)
   end
@@ -111,15 +111,15 @@ defmodule Plausible.Stats.FilterSuggestions do
     |> Enum.slice(0..24)
     |> Enum.map(fn c ->
       %{
-        code: Integer.to_string(c.id),
-        name: c.name
+        value: Integer.to_string(c.id),
+        label: c.name
       }
     end)
   end
 
   def filter_suggestions(site, _query, "goal", filter_search) do
-    site.domain
-    |> Plausible.Goals.for_domain()
+    site
+    |> Plausible.Goals.for_site()
     |> Enum.map(fn x -> if x.event_name, do: x.event_name, else: "Visit #{x.page_path}" end)
     |> Enum.filter(fn goal ->
       String.contains?(
@@ -127,54 +127,54 @@ defmodule Plausible.Stats.FilterSuggestions do
         String.downcase(filter_search)
       )
     end)
+    |> wrap_suggestions()
   end
 
   def filter_suggestions(site, query, "prop_key", filter_search) do
     filter_query = if filter_search == nil, do: "%", else: "%#{filter_search}%"
 
-    q =
-      from(e in base_event_query(site, Query.remove_event_filters(query, [:props])),
-        inner_lateral_join: meta in "meta",
-        as: :meta,
-        select: meta.key,
-        where: fragment("? ilike ?", meta.key, ^filter_query),
-        group_by: meta.key,
-        order_by: [desc: fragment("count(*)")],
-        limit: 25
-      )
-
-    q =
-      case Query.get_filter_by_prefix(query, "event:props") do
-        {"event:props:", {:is, val}} -> from([e, m] in q, where: m.value == ^val)
-        _ -> q
-      end
-
-    ClickhouseRepo.all(q)
-    |> Enum.filter(fn suggestion -> suggestion != "" end)
+    from(e in base_event_query(site, Query.remove_event_filters(query, [:props])),
+      inner_lateral_join: meta in "meta",
+      as: :meta,
+      select: meta.key,
+      where: fragment("? ilike ?", meta.key, ^filter_query),
+      group_by: meta.key,
+      order_by: [desc: fragment("count(*)")],
+      limit: 25
+    )
+    |> Plausible.Stats.CustomProps.maybe_allowed_props_only(site.allowed_event_props)
+    |> ClickhouseRepo.all()
+    |> wrap_suggestions()
   end
 
   def filter_suggestions(site, query, "prop_value", filter_search) do
     filter_query = if filter_search == nil, do: "%", else: "%#{filter_search}%"
 
-    q =
+    {"event:props:" <> key, _filter} = Query.get_filter_by_prefix(query, "event:props")
+
+    none_q =
+      from(e in base_event_query(site, Query.remove_event_filters(query, [:props])),
+        left_lateral_join: meta in "meta",
+        as: :meta,
+        select: "(none)",
+        where: fragment("not has(?, ?)", field(e, :"meta.key"), ^key),
+        limit: 1
+      )
+
+    search_q =
       from(e in base_event_query(site, query),
         inner_lateral_join: meta in "meta",
         as: :meta,
         select: meta.value,
-        where: fragment("? ilike ?", meta.value, ^filter_query),
+        where: meta.key == ^key and fragment("? ilike ?", meta.value, ^filter_query),
         group_by: meta.value,
         order_by: [desc: fragment("count(*)")],
         limit: 25
       )
 
-    q =
-      case Query.get_filter_by_prefix(query, "event:props") do
-        {"event:props:" <> key, _filter} -> from([e, m] in q, where: m.key == ^key)
-        _ -> q
-      end
-
-    ClickhouseRepo.all(q)
-    |> Enum.filter(fn suggestion -> suggestion != "" end)
+    ClickhouseRepo.all(none_q)
+    |> Kernel.++(ClickhouseRepo.all(search_q))
+    |> wrap_suggestions()
   end
 
   def filter_suggestions(site, query, filter_name, filter_search) do
@@ -298,5 +298,10 @@ defmodule Plausible.Stats.FilterSuggestions do
 
     ClickhouseRepo.all(q)
     |> Enum.filter(fn suggestion -> suggestion != "" end)
+    |> wrap_suggestions()
+  end
+
+  defp wrap_suggestions(list) do
+    Enum.map(list, fn val -> %{value: val, label: val} end)
   end
 end

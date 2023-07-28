@@ -6,10 +6,11 @@ defmodule Plausible.Stats.CurrentVisitors do
     first_datetime =
       NaiveDateTime.utc_now()
       |> Timex.shift(minutes: -5)
+      |> NaiveDateTime.truncate(:second)
 
     ClickhouseRepo.one(
-      from e in "events",
-        where: e.domain == ^site.domain,
+      from e in "events_v2",
+        where: e.site_id == ^site.id,
         where: e.timestamp >= ^first_datetime,
         select: uniq(e.user_id)
     )

@@ -26,7 +26,7 @@ defmodule PlausibleWeb.Api.ExternalController do
             conn
             |> put_resp_header("x-plausible-dropped", "#{Enum.count(dropped)}")
             |> put_status(400)
-            |> json(%{errors: traverse_errors(first_invalid_changeset)})
+            |> json(%{errors: Plausible.ChangesetHelpers.traverse_errors(first_invalid_changeset)})
           else
             conn
             |> put_resp_header("x-plausible-dropped", "#{Enum.count(dropped)}")
@@ -38,7 +38,7 @@ defmodule PlausibleWeb.Api.ExternalController do
       {:error, %Ecto.Changeset{} = changeset} ->
         conn
         |> put_status(400)
-        |> json(%{errors: traverse_errors(changeset)})
+        |> json(%{errors: Plausible.ChangesetHelpers.traverse_errors(changeset)})
     end
   end
 
@@ -86,14 +86,7 @@ defmodule PlausibleWeb.Api.ExternalController do
       |> Keyword.take([:version, :commit, :created, :tags])
       |> Map.new()
 
-    geo_database =
-      case Geolix.metadata(where: :geolocation) do
-        %{database_type: type} ->
-          type
-
-        _ ->
-          "(not configured)"
-      end
+    geo_database = Plausible.Geo.database_type() || "(not configured)"
 
     json(conn, %{
       geo_database: geo_database,
@@ -107,16 +100,6 @@ defmodule PlausibleWeb.Api.ExternalController do
         {:error, %Ecto.Changeset{} = changeset} -> changeset
         _ -> false
       end
-    end)
-  end
-
-  defp traverse_errors(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Regex.replace(~r"%{(\w+)}", msg, fn _, key ->
-        opts
-        |> Keyword.get(String.to_existing_atom(key), key)
-        |> to_string()
-      end)
     end)
   end
 end

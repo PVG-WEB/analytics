@@ -22,7 +22,9 @@ defmodule Plausible.Session.CacheStore do
   defp find_session(_domain, nil), do: nil
 
   defp find_session(event, user_id) do
-    case Cachex.get(:sessions, {event.domain, user_id}) do
+    from_cache = Cachex.get(:sessions, {event.site_id, user_id})
+
+    case from_cache do
       {:ok, nil} ->
         nil
 
@@ -38,7 +40,7 @@ defmodule Plausible.Session.CacheStore do
   end
 
   defp persist_session(session) do
-    key = {session.domain, session.user_id}
+    key = {session.site_id, session.user_id}
     Cachex.put(:sessions, key, session, ttl: :timer.minutes(30))
     session
   end
@@ -53,51 +55,26 @@ defmodule Plausible.Session.CacheStore do
         duration: Timex.diff(event.timestamp, session.start, :second) |> abs,
         pageviews:
           if(event.name == "pageview", do: session.pageviews + 1, else: session.pageviews),
-        country_code:
-          if(session.country_code == "", do: event.country_code, else: session.country_code),
-        subdivision1_code:
-          if(session.subdivision1_code == "",
-            do: event.subdivision1_code,
-            else: session.subdivision1_code
-          ),
-        subdivision2_code:
-          if(session.subdivision2_code == "",
-            do: event.subdivision2_code,
-            else: session.subdivision2_code
-          ),
-        city_geoname_id:
-          if(session.city_geoname_id == 0,
-            do: event.city_geoname_id,
-            else: session.city_geoname_id
-          ),
-        operating_system:
-          if(session.operating_system == "",
-            do: event.operating_system,
-            else: session.operating_system
-          ),
+        country_code: session.country_code || event.country_code,
+        subdivision1_code: session.subdivision1_code || event.subdivision1_code,
+        subdivision2_code: session.subdivision2_code || event.subdivision2_code,
+        city_geoname_id: session.city_geoname_id || event.city_geoname_id,
+        operating_system: session.operating_system || event.operating_system,
         operating_system_version:
-          if(session.operating_system_version == "",
-            do: event.operating_system_version,
-            else: session.operating_system_version
-          ),
-        browser: if(session.browser == "", do: event.browser, else: session.browser),
-        browser_version:
-          if(session.browser_version == "",
-            do: event.browser_version,
-            else: session.browser_version
-          ),
-        screen_size:
-          if(session.screen_size == "", do: event.screen_size, else: session.screen_size),
+          session.operating_system_version || event.operating_system_version,
+        browser: session.browser || event.browser,
+        browser_version: session.browser_version || event.browser_version,
+        screen_size: session.screen_size || event.screen_size,
         events: session.events + 1
     }
   end
 
   defp new_session_from_event(event) do
-    %Plausible.ClickhouseSession{
+    %Plausible.ClickhouseSessionV2{
       sign: 1,
-      session_id: Plausible.ClickhouseSession.random_uint64(),
+      session_id: Plausible.ClickhouseSessionV2.random_uint64(),
       hostname: event.hostname,
-      domain: event.domain,
+      site_id: event.site_id,
       user_id: event.user_id,
       entry_page: event.pathname,
       exit_page: event.pathname,

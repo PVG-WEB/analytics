@@ -12,35 +12,151 @@
 
 user = Plausible.Factory.insert(:user, email: "user@plausible.test", password: "plausible")
 
-site = Plausible.Factory.insert(:site, domain: "dummy.site")
+native_stats_range =
+  Date.range(
+    Date.add(Date.utc_today(), -720),
+    Date.utc_today()
+  )
 
-membership = Plausible.Factory.insert(:site_membership, user: user, site: site, role: :owner)
+imported_stats_range =
+  Date.range(
+    Date.add(native_stats_range.first, -360),
+    Date.add(native_stats_range.first, -1)
+  )
 
-put_random_time = fn date ->
-  random_time = Time.new!(:rand.uniform(23), :rand.uniform(59), 0)
+site =
+  Plausible.Factory.insert(:site,
+    domain: "dummy.site",
+    native_stats_start_at: NaiveDateTime.new!(native_stats_range.first, ~T[00:00:00]),
+    stats_start_date: NaiveDateTime.new!(imported_stats_range.first, ~T[00:00:00])
+  )
 
-  date
-  |> NaiveDateTime.new!(random_time)
-  |> NaiveDateTime.truncate(:second)
+_membership = Plausible.Factory.insert(:site_membership, user: user, site: site, role: :owner)
+
+put_random_time = fn
+  date, 0 ->
+    current_hour = Time.utc_now().hour
+    current_minute = Time.utc_now().minute
+    random_time = Time.new!(:rand.uniform(current_hour), :rand.uniform(current_minute - 1), 0)
+
+    date
+    |> NaiveDateTime.new!(random_time)
+    |> NaiveDateTime.truncate(:second)
+
+  date, _ ->
+    random_time = Time.new!(:rand.uniform(23), :rand.uniform(59), 0)
+
+    date
+    |> NaiveDateTime.new!(random_time)
+    |> NaiveDateTime.truncate(:second)
 end
 
-Enum.flat_map(-720..0, fn day_index ->
-  number_of_events = :rand.uniform(500)
-  date = Date.add(Date.utc_today(), day_index)
+geolocations = [
+  [
+    country_code: "IT",
+    subdivision1_code: "IT-62",
+    subdivision2_code: "IT-RM",
+    city_geoname_id: 3_169_070
+  ],
+  [
+    country_code: "EE",
+    subdivision1_code: "EE-37",
+    subdivision2_code: "EE-784",
+    city_geoname_id: 588_409
+  ],
+  [
+    country_code: "BR",
+    subdivision1_code: "BR-SP",
+    subdivision2_code: "",
+    city_geoname_id: 3_448_439
+  ],
+  [
+    country_code: "PL",
+    subdivision1_code: "PL-14",
+    subdivision2_code: "",
+    city_geoname_id: 756_135
+  ],
+  [
+    country_code: "DE",
+    subdivision1_code: "DE-BE",
+    subdivision2_code: "",
+    city_geoname_id: 2_950_159
+  ],
+  [
+    country_code: "US",
+    subdivision1_code: "US-CA",
+    subdivision2_code: "",
+    city_geoname_id: 5_391_959
+  ],
+  []
+]
 
-  attrs = [
-    domain: site.domain,
-    hostname: site.domain,
-    timestamp: fn -> put_random_time.(date) end,
-    referrer_source: fn -> Enum.random(["", "Facebook", "Twitter", "DuckDuckGo", "Google"]) end,
-    browser: fn -> Enum.random(["Edge", "Chrome", "Safari", "Firefox", "Vivaldi"]) end,
-    browser_version: fn -> 0..50 |> Enum.random() |> to_string() end,
-    country_code: fn -> Enum.random(["ZZ", "BR", "EE", "US", "DE", "PL", ""]) end,
-    screen_size: fn -> Enum.random(["Mobile", "Tablet", "Desktop", "Laptop"]) end,
-    operating_system: fn -> Enum.random(["Windows", "macOS", "Linux"]) end,
-    operating_system_version: fn -> 0..15 |> Enum.random() |> to_string() end
-  ]
+native_stats_range
+|> Enum.with_index()
+|> Enum.flat_map(fn {date, index} ->
+  Enum.map(0..:rand.uniform(500), fn _ ->
+    geolocation = Enum.random(geolocations)
 
-  Plausible.Factory.build_list(number_of_events, :pageview, attrs)
+    [
+      site_id: site.id,
+      hostname: site.domain,
+      timestamp: put_random_time.(date, index),
+      referrer_source: Enum.random(["", "Facebook", "Twitter", "DuckDuckGo", "Google"]),
+      browser: Enum.random(["Edge", "Chrome", "Safari", "Firefox", "Vivaldi"]),
+      browser_version: to_string(Enum.random(0..50)),
+      screen_size: Enum.random(["Mobile", "Tablet", "Desktop", "Laptop"]),
+      operating_system: Enum.random(["Windows", "macOS", "Linux"]),
+      operating_system_version: to_string(Enum.random(0..15)),
+      pathname:
+        Enum.random(["/", "/login", "/settings", "/register", "/docs", "/docs/1", "/docs/2"])
+    ]
+    |> Keyword.merge(geolocation)
+    |> then(&Plausible.Factory.build(:pageview, &1))
+  end)
 end)
 |> Plausible.TestUtils.populate_stats()
+
+site =
+  site
+  |> Plausible.Site.start_import(
+    imported_stats_range.first,
+    imported_stats_range.last,
+    "Google Analytics"
+  )
+  |> Plausible.Repo.update!()
+
+imported_stats_range
+|> Enum.flat_map(fn date ->
+  Enum.flat_map(0..:rand.uniform(500), fn _ ->
+    [
+      Plausible.Factory.build(:imported_visitors,
+        date: date,
+        pageviews: Enum.random(1..20),
+        visitors: Enum.random(1..20),
+        bounces: Enum.random(1..20),
+        visits: Enum.random(1..200),
+        visit_duration: Enum.random(1000..10000)
+      ),
+      Plausible.Factory.build(:imported_sources,
+        date: date,
+        source: Enum.random(["", "Facebook", "Twitter", "DuckDuckGo", "Google"]),
+        visitors: Enum.random(1..20),
+        visits: Enum.random(1..200),
+        bounces: Enum.random(1..20),
+        visit_duration: Enum.random(1000..10000)
+      ),
+      Plausible.Factory.build(:imported_pages,
+        date: date,
+        visitors: Enum.random(1..20),
+        pageviews: Enum.random(1..20),
+        exits: Enum.random(1..20),
+        time_on_page: Enum.random(1000..10000)
+      )
+    ]
+  end)
+end)
+|> then(&Plausible.TestUtils.populate_stats(site, &1))
+
+site
+|> Plausible.Site.import_success()
+|> Plausible.Repo.update!()

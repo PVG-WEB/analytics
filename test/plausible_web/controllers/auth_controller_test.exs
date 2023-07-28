@@ -1,5 +1,5 @@
 defmodule PlausibleWeb.AuthControllerTest do
-  use PlausibleWeb.ConnCase
+  use PlausibleWeb.ConnCase, async: true
   use Bamboo.Test
   use Plausible.Repo
 
@@ -15,9 +15,12 @@ defmodule PlausibleWeb.AuthControllerTest do
   end
 
   describe "POST /register" do
-    test "registering sends an activation link", %{conn: conn} do
+    setup do
       mock_captcha_success()
+      :ok
+    end
 
+    test "registering sends an activation link", %{conn: conn} do
       post(conn, "/register",
         user: %{
           name: "Jane Doe",
@@ -33,8 +36,6 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "user is redirected to activate page after registration", %{conn: conn} do
-      mock_captcha_success()
-
       conn =
         post(conn, "/register",
           user: %{
@@ -49,8 +50,6 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "creates user record", %{conn: conn} do
-      mock_captcha_success()
-
       post(conn, "/register",
         user: %{
           name: "Jane Doe",
@@ -65,8 +64,6 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "logs the user in", %{conn: conn} do
-      mock_captcha_success()
-
       conn =
         post(conn, "/register",
           user: %{
@@ -81,8 +78,6 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "user is redirected to activation after registration", %{conn: conn} do
-      mock_captcha_success()
-
       conn =
         post(conn, "/register",
           user: %{
@@ -94,22 +89,6 @@ defmodule PlausibleWeb.AuthControllerTest do
         )
 
       assert redirected_to(conn) == "/activate"
-    end
-
-    test "renders captcha errors in case of captcha input verification failure", %{conn: conn} do
-      mock_captcha_failure()
-
-      conn =
-        post(conn, "/register",
-          user: %{
-            name: "Jane Doe",
-            email: "user@example.com",
-            password: "very-secret",
-            password_confirmation: "very-secret"
-          }
-        )
-
-      assert html_response(conn, 200) =~ "Please complete the captcha"
     end
   end
 
@@ -134,6 +113,7 @@ defmodule PlausibleWeb.AuthControllerTest do
 
   describe "POST /register/invitation/:invitation_id" do
     setup do
+      mock_captcha_success()
       inviter = insert(:user)
       site = insert(:site, members: [inviter])
 
@@ -149,8 +129,6 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "registering sends an activation link", %{conn: conn, invitation: invitation} do
-      mock_captcha_success()
-
       post(conn, "/register/invitation/#{invitation.invitation_id}",
         user: %{
           name: "Jane Doe",
@@ -169,8 +147,6 @@ defmodule PlausibleWeb.AuthControllerTest do
       conn: conn,
       invitation: invitation
     } do
-      mock_captcha_success()
-
       conn =
         post(conn, "/register/invitation/#{invitation.invitation_id}",
           user: %{
@@ -185,8 +161,6 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "creates user record", %{conn: conn, invitation: invitation} do
-      mock_captcha_success()
-
       post(conn, "/register/invitation/#{invitation.invitation_id}",
         user: %{
           name: "Jane Doe",
@@ -204,8 +178,6 @@ defmodule PlausibleWeb.AuthControllerTest do
       conn: conn,
       invitation: invitation
     } do
-      mock_captcha_success()
-
       post(conn, "/register/invitation/#{invitation.invitation_id}",
         user: %{
           name: "Jane Doe",
@@ -220,8 +192,6 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "logs the user in", %{conn: conn, invitation: invitation} do
-      mock_captcha_success()
-
       conn =
         post(conn, "/register/invitation/#{invitation.invitation_id}",
           user: %{
@@ -236,8 +206,6 @@ defmodule PlausibleWeb.AuthControllerTest do
     end
 
     test "user is redirected to activation after registration", %{conn: conn} do
-      mock_captcha_success()
-
       conn =
         post(conn, "/register",
           user: %{
@@ -250,13 +218,29 @@ defmodule PlausibleWeb.AuthControllerTest do
 
       assert redirected_to(conn) == "/activate"
     end
+  end
+
+  describe "captcha failure" do
+    setup do
+      mock_captcha_failure()
+      inviter = insert(:user)
+      site = insert(:site, members: [inviter])
+
+      invitation =
+        insert(:invitation,
+          site_id: site.id,
+          inviter: inviter,
+          email: "user@email.co",
+          role: :admin
+        )
+
+      {:ok, %{site: site, invitation: invitation}}
+    end
 
     test "renders captcha errors in case of captcha input verification failure", %{
       conn: conn,
       invitation: invitation
     } do
-      mock_captcha_failure()
-
       conn =
         post(conn, "/register/invitation/#{invitation.invitation_id}",
           user: %{
@@ -519,12 +503,15 @@ defmodule PlausibleWeb.AuthControllerTest do
       assert Password.match?("new-password", user.password_hash)
     end
 
-    test "with valid token - redirects the user to login", %{conn: conn} do
+    test "with valid token - redirects the user to login and shows success message", %{conn: conn} do
       user = insert(:user)
       token = Token.sign_password_reset(user.email)
       conn = post(conn, "/password/reset", %{token: token, password: "new-password"})
 
-      assert redirected_to(conn, 302) == "/login"
+      assert location = "/login" = redirected_to(conn, 302)
+
+      conn = get(recycle(conn), location)
+      assert html_response(conn, 200) =~ "Password updated successfully"
     end
   end
 
@@ -693,11 +680,20 @@ defmodule PlausibleWeb.AuthControllerTest do
         }
       ])
 
+      Repo.insert_all("sent_renewal_notifications", [
+        %{
+          user_id: user.id,
+          timestamp: NaiveDateTime.utc_now()
+        }
+      ])
+
       insert(:google_auth, site: site, user: user)
       insert(:subscription, user: user, status: "deleted")
 
       conn = delete(conn, "/me")
       assert redirected_to(conn) == "/"
+      assert Repo.reload(site) == nil
+      assert Repo.reload(user) == nil
     end
 
     test "deletes sites that the user owns", %{conn: conn, user: user, site: owner_site} do
@@ -714,6 +710,49 @@ defmodule PlausibleWeb.AuthControllerTest do
   describe "POST /settings/api-keys" do
     setup [:create_user, :log_in]
     import Ecto.Query
+
+    test "can create an API key", %{conn: conn, user: user} do
+      site = insert(:site)
+      insert(:site_membership, site: site, user: user, role: "owner")
+
+      conn =
+        post(conn, "/settings/api-keys", %{
+          "api_key" => %{
+            "user_id" => user.id,
+            "name" => "all your code are belong to us",
+            "key" => "swordfish"
+          }
+        })
+
+      key = Plausible.Auth.ApiKey |> where(user_id: ^user.id) |> Repo.one()
+      assert conn.status == 302
+      assert key.name == "all your code are belong to us"
+    end
+
+    test "cannot create a duplicate API key", %{conn: conn, user: user} do
+      site = insert(:site)
+      insert(:site_membership, site: site, user: user, role: "owner")
+
+      conn =
+        post(conn, "/settings/api-keys", %{
+          "api_key" => %{
+            "user_id" => user.id,
+            "name" => "all your code are belong to us",
+            "key" => "swordfish"
+          }
+        })
+
+      conn2 =
+        post(conn, "/settings/api-keys", %{
+          "api_key" => %{
+            "user_id" => user.id,
+            "name" => "all your code are belong to us",
+            "key" => "swordfish"
+          }
+        })
+
+      assert html_response(conn2, 200) =~ "has already been taken"
+    end
 
     test "can't create api key into another site", %{conn: conn, user: me} do
       my_site = insert(:site)
@@ -756,6 +795,19 @@ defmodule PlausibleWeb.AuthControllerTest do
       end
 
       assert Repo.get(ApiKey, api_key.id)
+    end
+  end
+
+  describe "GET /auth/google/callback" do
+    test "shows error and redirects back to settings when authentication fails", %{conn: conn} do
+      site = insert(:site)
+      callback_params = %{"error" => "access_denied", "state" => "[#{site.id},\"import\"]"}
+      conn = get(conn, Routes.auth_path(conn, :google_auth_callback), callback_params)
+
+      assert redirected_to(conn, 302) == Routes.site_path(conn, :settings_general, site.domain)
+
+      assert Phoenix.Flash.get(conn.assigns.flash, :error) =~
+               "unable to authenticate your Google Analytics"
     end
   end
 

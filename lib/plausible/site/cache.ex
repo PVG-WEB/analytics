@@ -9,6 +9,10 @@ defmodule Plausible.Site.Cache do
   during tests via the `:sites_by_domain_cache_enabled` application env key.
   This can be overridden on case by case basis, using the child specs options.
 
+  NOTE: the cache allows lookups by both `domain` and `domain_changed_from`
+  fields - this is to allow traffic from sites whose domains changed within a certain
+  grace period (see: `Plausible.Site.Transfer`).
+
   When Cache is disabled via application env, the `get/1` function
   falls back to pure database lookups. This should help with introducing
   cached lookups in existing code, so that no existing tests should break.
@@ -47,10 +51,11 @@ defmodule Plausible.Site.Cache do
   @modes [:all, :updated_recently]
 
   @cached_schema_fields ~w(
-     id
-     domain
-     ingest_rate_limit_scale_seconds
-     ingest_rate_limit_threshold
+    id
+    domain
+    domain_changed_from
+    ingest_rate_limit_scale_seconds
+    ingest_rate_limit_threshold
    )a
 
   @type t() :: Site.t()
@@ -87,16 +92,9 @@ defmodule Plausible.Site.Cache do
 
   @spec refresh_all(Keyword.t()) :: :ok
   def refresh_all(opts \\ []) do
-    sites_by_domain_query =
-      from s in Site,
-        select: {
-          s.domain,
-          %{struct(s, ^@cached_schema_fields) | from_cache?: true}
-        }
-
     refresh(
       :all,
-      sites_by_domain_query,
+      sites_by_domain_query(),
       Keyword.put(opts, :delete_stale_items?, true)
     )
   end
@@ -104,13 +102,9 @@ defmodule Plausible.Site.Cache do
   @spec refresh_updated_recently(Keyword.t()) :: :ok
   def refresh_updated_recently(opts \\ []) do
     recently_updated_sites_query =
-      from s in Site,
+      from [s, mg] in sites_by_domain_query(),
         order_by: [asc: s.updated_at],
-        where: s.updated_at > ago(^15, "minute"),
-        select: {
-          s.domain,
-          %{struct(s, ^@cached_schema_fields) | from_cache?: true}
-        }
+        where: s.updated_at > ago(^15, "minute") or mg.updated_at > ago(^15, "minute")
 
     refresh(
       :updated_recently,
@@ -119,11 +113,23 @@ defmodule Plausible.Site.Cache do
     )
   end
 
+  defp sites_by_domain_query do
+    from s in Site,
+      left_join: mg in assoc(s, :revenue_goals),
+      select: {
+        s.domain,
+        s.domain_changed_from,
+        %{struct(s, ^@cached_schema_fields) | from_cache?: true}
+      },
+      preload: [revenue_goals: mg]
+  end
+
   @spec merge(new_items :: [Site.t()], opts :: Keyword.t()) :: :ok
   def merge(new_items, opts \\ [])
   def merge([], _), do: :ok
 
   def merge(new_items, opts) do
+    new_items = unwrap_cache_keys(new_items)
     cache_name = Keyword.get(opts, :cache_name, @cache_name)
     true = Cachex.put_many!(cache_name, new_items)
 
@@ -169,14 +175,32 @@ defmodule Plausible.Site.Cache do
           site
 
         {:error, e} ->
-          Logger.error(
-            "Error retrieving '#{domain}' from '#{inspect(cache_name)}': #{inspect(e)}"
-          )
+          Logger.error("Error retrieving domain from '#{inspect(cache_name)}': #{inspect(e)}")
 
           nil
       end
     else
-      Plausible.Sites.get_by_domain(domain)
+      get_from_source(domain)
+    end
+  end
+
+  defp get_from_source(domain) do
+    query = from s in sites_by_domain_query(), where: s.domain == ^domain
+
+    case Plausible.Repo.one(query) do
+      {_, _, site} -> %Site{site | from_cache?: false}
+      _any -> nil
+    end
+  end
+
+  @spec get_site_id(String.t(), Keyword.t()) :: pos_integer() | nil
+  def get_site_id(domain, opts \\ []) do
+    case get(domain, opts) do
+      %{id: site_id} ->
+        site_id
+
+      nil ->
+        nil
     end
   end
 
@@ -211,5 +235,15 @@ defmodule Plausible.Site.Cache do
     result = fun.()
     stop = System.monotonic_time()
     {stop - start, result}
+  end
+
+  defp unwrap_cache_keys(items) do
+    Enum.reduce(items, [], fn
+      {domain, nil, object}, acc ->
+        [{domain, object} | acc]
+
+      {domain, domain_changed_from, object}, acc ->
+        [{domain, object}, {domain_changed_from, object} | acc]
+    end)
   end
 end

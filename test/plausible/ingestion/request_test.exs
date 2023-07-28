@@ -100,6 +100,18 @@ defmodule Plausible.Ingestion.RequestTest do
     assert request.uri.host == "dummy.site"
   end
 
+  test "request can be built with numeric event name" do
+    payload = %{
+      n: 404,
+      d: "dummy.site",
+      u: "http://dummy.site/index"
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:ok, request} = Request.build(conn)
+    assert request.event_name == "404"
+  end
+
   test "hostname is (none) if host-less uri provided" do
     payload = %{
       name: "pageview",
@@ -142,7 +154,6 @@ defmodule Plausible.Ingestion.RequestTest do
       domain: "dummy.site",
       url: "http://dummy.site/index.html",
       referrer: "https://example.com",
-      screen_width: 1024,
       hashMode: 1,
       props: %{
         "custom1" => "property1",
@@ -154,7 +165,6 @@ defmodule Plausible.Ingestion.RequestTest do
 
     assert {:ok, request} = Request.build(conn)
     assert request.referrer == "https://example.com"
-    assert request.screen_width == 1024
     assert request.hash_mode == 1
     assert request.props["custom1"] == "property1"
     assert request.props["custom2"] == "property2"
@@ -201,5 +211,130 @@ defmodule Plausible.Ingestion.RequestTest do
     assert {:ok, request} = Request.build(conn)
     assert request.query_params["foo"] == "bar"
     assert request.query_params["baz"] == "bam"
+  end
+
+  test "returns validation error when using data uris" do
+    payload = %{
+      name: "pageview",
+      domain: "dummy.site",
+      url: "data:text/html,%3Cscript%3Ealert%28%27hi%27%29%3B%3C%2Fscript%3E"
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:error, changeset} = Request.build(conn)
+    assert {"scheme is not allowed", _} = changeset.errors[:url]
+  end
+
+  test "returns validation error when url is too long" do
+    payload = %{
+      name: "pageview",
+      domain: "dummy.site",
+      url: "https://dummy.site/#{String.duplicate("a", 5000)}"
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:error, changeset} = Request.build(conn)
+    assert {"must be a valid url", _} = changeset.errors[:url]
+  end
+
+  test "returns validation error when event name is too long" do
+    payload = %{
+      name: String.duplicate("a", 500),
+      domain: "dummy.site",
+      url: "https://dummy.site/"
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:error, changeset} = Request.build(conn)
+    assert {"should be at most %{count} character(s)", _} = changeset.errors[:event_name]
+  end
+
+  test "returns validation error when event name is blank" do
+    payload = %{
+      name: nil,
+      domain: "dummy.site",
+      url: "https://dummy.site/"
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:error, changeset} = Request.build(conn)
+    assert {"can't be blank", _} = changeset.errors[:event_name]
+  end
+
+  test "returns validation error when event name cannot be cast to string" do
+    payload = %{
+      name: ["list", "of", "things"],
+      domain: "dummy.site",
+      url: "https://dummy.site/"
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:error, changeset} = Request.build(conn)
+    assert {"is invalid", _} = changeset.errors[:event_name]
+  end
+
+  test "truncates referrer when too long" do
+    payload = %{
+      name: "pageview",
+      domain: "dummy.site",
+      url: "https://dummy.site/",
+      referrer: String.duplicate("a", 2500)
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:ok, request} = Request.build(conn)
+    assert request.referrer == String.duplicate("a", 2000)
+  end
+
+  test "returns validation error when props keys are too long" do
+    payload = %{
+      name: "pageview",
+      domain: "dummy.site",
+      url: "https://dummy.site/",
+      props: %{String.duplicate("a", 500) => "abc"}
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:error, changeset} = Request.build(conn)
+
+    assert {"keys should have at most 300 bytes and values 2000 bytes", _} =
+             changeset.errors[:props]
+  end
+
+  test "returns validation error when props values are too long" do
+    payload = %{
+      name: "pageview",
+      domain: "dummy.site",
+      url: "https://dummy.site/",
+      props: %{"abc" => String.duplicate("a", 2500)}
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+    assert {:error, changeset} = Request.build(conn)
+
+    assert {"keys should have at most 300 bytes and values 2000 bytes", _} =
+             changeset.errors[:props]
+  end
+
+  test "trims prop list to 30 items when sending too many items" do
+    payload = %{
+      name: "pageview",
+      domain: "dummy.site",
+      url: "http://dummy.site/index.html",
+      referrer: "https://example.com",
+      hashMode: 1,
+      props: for(i <- 1..50, do: {"#{i}", "foo"}, into: %{})
+    }
+
+    conn = build_conn(:post, "/api/events", payload)
+
+    assert {:ok, request} = Request.build(conn)
+    assert map_size(request.props) == 30
+  end
+
+  test "malicious input, technically valid json" do
+    conn = build_conn(:post, "/api/events", "\"<script>\"")
+    assert {:error, changeset} = Request.build(conn)
+    assert changeset.errors[:request]
   end
 end

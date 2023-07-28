@@ -133,10 +133,10 @@ defmodule Plausible.BillingTest do
       site = insert(:site, members: [user])
 
       create_pageviews([
-        %{domain: site.domain, timestamp: ~N[2021-01-01 00:00:00]},
-        %{domain: site.domain, timestamp: ~N[2020-12-31 00:00:00]},
-        %{domain: site.domain, timestamp: ~N[2020-11-01 00:00:00]},
-        %{domain: site.domain, timestamp: ~N[2020-10-31 00:00:00]}
+        %{site: site, timestamp: ~N[2021-01-01 00:00:00]},
+        %{site: site, timestamp: ~N[2020-12-31 00:00:00]},
+        %{site: site, timestamp: ~N[2020-11-01 00:00:00]},
+        %{site: site, timestamp: ~N[2020-10-31 00:00:00]}
       ])
 
       assert Billing.last_two_billing_months_usage(user, today) == {1, 1}
@@ -163,10 +163,10 @@ defmodule Plausible.BillingTest do
         )
 
       create_pageviews([
-        %{domain: owner_site.domain, timestamp: ~N[2020-12-31 00:00:00]},
-        %{domain: admin_site.domain, timestamp: ~N[2020-12-31 00:00:00]},
-        %{domain: owner_site.domain, timestamp: ~N[2020-11-01 00:00:00]},
-        %{domain: admin_site.domain, timestamp: ~N[2020-11-01 00:00:00]}
+        %{site: owner_site, timestamp: ~N[2020-12-31 00:00:00]},
+        %{site: admin_site, timestamp: ~N[2020-12-31 00:00:00]},
+        %{site: owner_site, timestamp: ~N[2020-11-01 00:00:00]},
+        %{site: admin_site, timestamp: ~N[2020-11-01 00:00:00]}
       ])
 
       assert Billing.last_two_billing_months_usage(user, today) == {1, 1}
@@ -506,6 +506,26 @@ defmodule Plausible.BillingTest do
 
       assert Repo.reload!(site).locked == true
       assert Repo.reload!(user).grace_period.allowance_required == 11_000
+    end
+
+    test "ignores if subscription cannot be found" do
+      user = insert(:user)
+
+      res =
+        Billing.subscription_updated(%{
+          "alert_name" => "subscription_updated",
+          "subscription_id" => "666",
+          "subscription_plan_id" => "new-plan-id",
+          "update_url" => "update_url.com",
+          "cancel_url" => "cancel_url.com",
+          "passthrough" => user.id,
+          "status" => "active",
+          "next_bill_date" => "2019-06-01",
+          "new_unit_price" => "12.00",
+          "currency" => "EUR"
+        })
+
+      assert res == {:ok, nil}
     end
   end
 

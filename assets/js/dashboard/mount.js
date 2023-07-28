@@ -5,6 +5,9 @@ import 'url-search-params-polyfill';
 import Router from './router'
 import ErrorBoundary from './error-boundary'
 import * as api from './api'
+import * as timer from './util/realtime-update-timer'
+
+timer.start()
 
 const container = document.getElementById('stats-react-container')
 
@@ -14,6 +17,7 @@ if (container) {
     offset: container.dataset.offset,
     hasGoals: container.dataset.hasGoals === 'true',
     statsBegin: container.dataset.statsBegin,
+    nativeStatsBegin: container.dataset.nativeStatsBegin,
     embedded: container.dataset.embedded,
     background: container.dataset.background,
     isDbip: container.dataset.isDbip === 'true',

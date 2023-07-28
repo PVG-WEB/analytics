@@ -37,7 +37,10 @@ defmodule PlausibleWeb.AuthController do
         conn
 
       disable_registration in [:invite_only, true] ->
-        conn |> redirect(to: Routes.auth_path(conn, :login_form)) |> halt()
+        conn
+        |> put_flash(:error, "Registration is disabled on this instance")
+        |> redirect(to: Routes.auth_path(conn, :login_form))
+        |> halt()
 
       true ->
         conn
@@ -58,7 +61,7 @@ defmodule PlausibleWeb.AuthController do
   end
 
   def register(conn, params) do
-    conn = put_layout(conn, {PlausibleWeb.LayoutView, "focus.html"})
+    conn = put_layout(conn, html: {PlausibleWeb.LayoutView, :focus})
     user = Plausible.Auth.User.new(params["user"])
 
     if PlausibleWeb.Captcha.verify(params["h-captcha-response"]) do
@@ -371,12 +374,15 @@ defmodule PlausibleWeb.AuthController do
       |> redirect(to: login_dest)
     else
       :wrong_password ->
+        maybe_log_failed_login_attempts("wrong password for #{email}")
+
         render(conn, "login_form.html",
           error: "Wrong email or password. Please try again.",
           layout: {PlausibleWeb.LayoutView, "focus.html"}
         )
 
       :user_not_found ->
+        maybe_log_failed_login_attempts("user not found for #{email}")
         Plausible.Auth.Password.dummy_calculation()
 
         render(conn, "login_form.html",
@@ -385,11 +391,19 @@ defmodule PlausibleWeb.AuthController do
         )
 
       {:rate_limit, _} ->
+        maybe_log_failed_login_attempts("too many logging attempts for #{email}")
+
         render_error(
           conn,
           429,
           "Too many login attempts. Wait a minute before trying again."
         )
+    end
+  end
+
+  defp maybe_log_failed_login_attempts(message) do
+    if Application.get_env(:plausible, :log_failed_login_attempts) do
+      Logger.warning("[login] #{message}")
     end
   end
 
@@ -533,21 +547,7 @@ defmodule PlausibleWeb.AuthController do
   end
 
   def delete_me(conn, params) do
-    user =
-      conn.assigns[:current_user]
-      |> Repo.preload(site_memberships: :site)
-      |> Repo.preload(:subscription)
-
-    for membership <- user.site_memberships do
-      Repo.delete!(membership)
-
-      if membership.role == :owner do
-        Plausible.Purge.delete_site!(membership.site)
-      end
-    end
-
-    if user.subscription, do: Repo.delete!(user.subscription)
-    Repo.delete!(user)
+    Plausible.Auth.delete_user(conn.assigns[:current_user])
 
     logout(conn, params)
   end
@@ -559,6 +559,39 @@ defmodule PlausibleWeb.AuthController do
     |> configure_session(drop: true)
     |> delete_resp_cookie("logged_in")
     |> redirect(to: redirect_to)
+  end
+
+  def google_auth_callback(conn, %{"error" => error, "state" => state} = params) do
+    [site_id, _redirect_to] = Jason.decode!(state)
+    site = Repo.get(Plausible.Site, site_id)
+
+    case error do
+      "access_denied" ->
+        conn
+        |> put_flash(
+          :error,
+          "We were unable to authenticate your Google Analytics account. Please check that you have granted us permission to 'See and download your Google Analytics data' and try again."
+        )
+        |> redirect(to: Routes.site_path(conn, :settings_general, site.domain))
+
+      message when message in ["server_error", "temporarily_unavailable"] ->
+        conn
+        |> put_flash(
+          :error,
+          "We are unable to authenticate your Google Analytics account because Google's authentication service is temporarily unavailable. Please try again in a few moments."
+        )
+        |> redirect(to: Routes.site_path(conn, :settings_general, site.domain))
+
+      _any ->
+        Sentry.capture_message("Google OAuth callback failed. Reason: #{inspect(params)}")
+
+        conn
+        |> put_flash(
+          :error,
+          "We were unable to authenticate your Google Analytics account. If the problem persists, please contact support for assistance."
+        )
+        |> redirect(to: Routes.site_path(conn, :settings_general, site.domain))
+    end
   end
 
   def google_auth_callback(conn, %{"code" => code, "state" => state}) do

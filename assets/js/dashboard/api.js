@@ -45,6 +45,14 @@ export function serializeQuery(query, extraQuery=[]) {
   if (query.filters) { queryObj.filters = serializeFilters(query.filters)  }
   if (query.with_imported) { queryObj.with_imported = query.with_imported  }
   if (SHARED_LINK_AUTH) { queryObj.auth = SHARED_LINK_AUTH }
+
+  if (query.comparison) {
+    queryObj.comparison = query.comparison
+    queryObj.compare_from = query.compare_from ? formatISO(query.compare_from) : undefined
+    queryObj.compare_to = query.compare_to ? formatISO(query.compare_to) : undefined
+    queryObj.match_day_of_week = query.match_day_of_week
+  }
+
   Object.assign(queryObj, ...extraQuery)
 
   return '?' + serialize(queryObj)

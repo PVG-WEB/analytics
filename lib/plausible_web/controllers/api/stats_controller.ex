@@ -3,7 +3,11 @@ defmodule PlausibleWeb.Api.StatsController do
   use Plausible.Repo
   use Plug.ErrorHandler
   alias Plausible.Stats
-  alias Plausible.Stats.{Query, Filters}
+  alias Plausible.Stats.{Query, Filters, Comparisons, CustomProps}
+
+  require Logger
+
+  plug :validate_common_input
 
   @doc """
   Returns a time-series based on given parameters.
@@ -95,9 +99,9 @@ defmodule PlausibleWeb.Api.StatsController do
 
       selected_metric =
         if !params["metric"] || params["metric"] == "conversions" do
-          "visitors"
+          :visitors
         else
-          params["metric"]
+          String.to_existing_atom(params["metric"])
         end
 
       timeseries_query =
@@ -107,29 +111,56 @@ defmodule PlausibleWeb.Api.StatsController do
           query
         end
 
-      timeseries_result =
-        Stats.timeseries(site, timeseries_query, [String.to_existing_atom(selected_metric)])
+      timeseries_result = Stats.timeseries(site, timeseries_query, [selected_metric])
 
-      plot =
-        Enum.map(timeseries_result, fn row ->
-          row[String.to_existing_atom(selected_metric)] || 0
-        end)
+      comparison_opts = parse_comparison_opts(params)
 
-      labels = Enum.map(timeseries_result, fn row -> row[:date] end)
+      {comparison_query, comparison_result} =
+        case Comparisons.compare(site, query, params["comparison"], comparison_opts) do
+          {:ok, comparison_query} ->
+            {comparison_query, Stats.timeseries(site, comparison_query, [selected_metric])}
+
+          {:error, :not_supported} ->
+            {nil, nil}
+        end
+
+      labels = label_timeseries(timeseries_result, comparison_result)
       present_index = present_index_for(site, query, labels)
       full_intervals = build_full_intervals(query, labels)
 
       json(conn, %{
-        plot: plot,
+        plot: plot_timeseries(timeseries_result, selected_metric),
         labels: labels,
+        comparison_plot: comparison_result && plot_timeseries(comparison_result, selected_metric),
+        comparison_labels: comparison_result && label_timeseries(comparison_result, nil),
         present_index: present_index,
         interval: query.interval,
-        with_imported: query.include_imported,
+        with_imported: with_imported?(query, comparison_query),
         imported_source: site.imported_data && site.imported_data.source,
         full_intervals: full_intervals
       })
     else
       {:error, message} when is_binary(message) -> bad_request(conn, message)
+    end
+  end
+
+  defp plot_timeseries(timeseries, metric) do
+    Enum.map(timeseries, fn row -> row[metric] || 0 end)
+  end
+
+  defp label_timeseries(main_result, nil) do
+    Enum.map(main_result, & &1.date)
+  end
+
+  @blank_value "__blank__"
+  defp label_timeseries(main_result, comparison_result) do
+    blanks_to_fill = Enum.count(comparison_result) - Enum.count(main_result)
+
+    if blanks_to_fill > 0 do
+      blanks = List.duplicate(@blank_value, blanks_to_fill)
+      Enum.map(main_result, & &1.date) ++ blanks
+    else
+      Enum.map(main_result, & &1.date)
     end
   end
 
@@ -165,14 +196,26 @@ defmodule PlausibleWeb.Api.StatsController do
     with :ok <- validate_params(params) do
       query = Query.from(site, params) |> Filters.add_prefix()
 
-      {top_stats, sample_percent} = fetch_top_stats(site, query)
+      comparison_opts = parse_comparison_opts(params)
+
+      comparison_query =
+        case Stats.Comparisons.compare(site, query, params["comparison"], comparison_opts) do
+          {:ok, query} -> query
+          {:error, _cause} -> nil
+        end
+
+      {top_stats, sample_percent} = fetch_top_stats(site, query, comparison_query)
 
       json(conn, %{
         top_stats: top_stats,
         interval: query.interval,
         sample_percent: sample_percent,
-        with_imported: query.include_imported,
-        imported_source: site.imported_data && site.imported_data.source
+        with_imported: with_imported?(query, comparison_query),
+        imported_source: site.imported_data && site.imported_data.source,
+        comparing_from: comparison_query && comparison_query.date_range.first,
+        comparing_to: comparison_query && comparison_query.date_range.last,
+        from: query.date_range.first,
+        to: query.date_range.last
       })
     else
       {:error, message} when is_binary(message) -> bad_request(conn, message)
@@ -230,7 +273,37 @@ defmodule PlausibleWeb.Api.StatsController do
     end
   end
 
-  defp fetch_top_stats(site, %Query{period: "realtime"} = query) do
+  defp fetch_top_stats(
+         site,
+         %Query{period: "realtime", filters: %{"event:goal" => _goal}} = query,
+         _comparison_query
+       ) do
+    query_30m = %Query{query | period: "30m"}
+
+    %{
+      visitors: %{value: unique_conversions},
+      events: %{value: total_conversions}
+    } = Stats.aggregate(site, query_30m, [:visitors, :events])
+
+    stats = [
+      %{
+        name: "Current visitors",
+        value: Stats.current_visitors(site)
+      },
+      %{
+        name: "Unique conversions (last 30 min)",
+        value: unique_conversions
+      },
+      %{
+        name: "Total conversions (last 30 min)",
+        value: total_conversions
+      }
+    ]
+
+    {stats, 100}
+  end
+
+  defp fetch_top_stats(site, %Query{period: "realtime"} = query, _comparison_query) do
     query_30m = %Query{query | period: "30m"}
 
     %{
@@ -256,75 +329,88 @@ defmodule PlausibleWeb.Api.StatsController do
     {stats, 100}
   end
 
-  defp fetch_top_stats(site, %Query{filters: %{"event:goal" => _goal}} = query) do
-    total_q = Query.remove_event_filters(query, [:goal, :props])
-    prev_query = Query.shift_back(query, site)
-    prev_total_query = Query.shift_back(total_q, site)
+  defp fetch_top_stats(site, %Query{filters: %{"event:goal" => _goal}} = query, comparison_query) do
+    totals_query = Query.remove_event_filters(query, [:goal, :props])
 
     %{
       visitors: %{value: unique_visitors}
-    } = Stats.aggregate(site, total_q, [:visitors])
-
-    %{
-      visitors: %{value: prev_unique_visitors}
-    } = Stats.aggregate(site, prev_total_query, [:visitors])
+    } = Stats.aggregate(site, totals_query, [:visitors])
 
     %{
       visitors: %{value: converted_visitors},
       events: %{value: completions}
     } = Stats.aggregate(site, query, [:visitors, :events])
 
-    %{
-      visitors: %{value: prev_converted_visitors},
-      events: %{value: prev_completions}
-    } = Stats.aggregate(site, prev_query, [:visitors, :events])
+    {prev_unique_visitors, prev_converted_visitors, prev_completions} =
+      if comparison_query do
+        totals_comparison_query = Query.remove_event_filters(comparison_query, [:goal, :props])
+
+        %{
+          visitors: %{value: prev_unique_visitors}
+        } = Stats.aggregate(site, totals_comparison_query, [:visitors])
+
+        %{
+          visitors: %{value: prev_converted_visitors},
+          events: %{value: prev_completions}
+        } = Stats.aggregate(site, comparison_query, [:visitors, :events])
+
+        {prev_unique_visitors, prev_converted_visitors, prev_completions}
+      else
+        {nil, nil, nil}
+      end
 
     conversion_rate = calculate_cr(unique_visitors, converted_visitors)
     prev_conversion_rate = calculate_cr(prev_unique_visitors, prev_converted_visitors)
 
-    stats = [
-      %{
-        name: "Unique visitors",
-        value: unique_visitors,
-        change: percent_change(prev_unique_visitors, unique_visitors)
-      },
-      %{
-        name: "Unique conversions",
-        value: converted_visitors,
-        change: percent_change(prev_converted_visitors, converted_visitors)
-      },
-      %{
-        name: "Total conversions",
-        value: completions,
-        change: percent_change(prev_completions, completions)
-      },
-      %{
-        name: "Conversion rate",
-        value: conversion_rate,
-        change: percent_change(prev_conversion_rate, conversion_rate)
-      }
-    ]
+    build_item = fn name, value, comparison_value ->
+      if comparison_value do
+        change = percent_change(comparison_value, value)
+        %{name: name, value: value, comparison_value: comparison_value, change: change}
+      else
+        %{name: name, value: value}
+      end
+    end
 
-    {stats, 100}
+    {[
+       build_item.("Unique visitors", unique_visitors, prev_unique_visitors),
+       build_item.("Unique conversions", converted_visitors, prev_converted_visitors),
+       build_item.("Total conversions", completions, prev_completions),
+       build_item.("Conversion rate", conversion_rate, prev_conversion_rate)
+     ], 100}
   end
 
-  defp fetch_top_stats(site, query) do
-    prev_query = Query.shift_back(query, site)
-
+  defp fetch_top_stats(site, query, comparison_query) do
     metrics =
       if query.filters["event:page"] do
-        [:visitors, :pageviews, :bounce_rate, :time_on_page, :sample_percent]
+        [
+          :visitors,
+          :visits,
+          :pageviews,
+          :bounce_rate,
+          :time_on_page,
+          :sample_percent
+        ]
       else
-        [:visitors, :pageviews, :bounce_rate, :visit_duration, :sample_percent]
+        [
+          :visitors,
+          :visits,
+          :pageviews,
+          :views_per_visit,
+          :bounce_rate,
+          :visit_duration,
+          :sample_percent
+        ]
       end
 
     current_results = Stats.aggregate(site, query, metrics)
-    prev_results = Stats.aggregate(site, prev_query, metrics)
+    prev_results = comparison_query && Stats.aggregate(site, comparison_query, metrics)
 
     stats =
       [
         top_stats_entry(current_results, prev_results, "Unique visitors", :visitors),
+        top_stats_entry(current_results, prev_results, "Total visits", :visits),
         top_stats_entry(current_results, prev_results, "Total pageviews", :pageviews),
+        top_stats_entry(current_results, prev_results, "Views per visit", :views_per_visit),
         top_stats_entry(current_results, prev_results, "Bounce rate", :bounce_rate),
         top_stats_entry(current_results, prev_results, "Visit duration", :visit_duration),
         top_stats_entry(current_results, prev_results, "Time on page", :time_on_page)
@@ -336,11 +422,15 @@ defmodule PlausibleWeb.Api.StatsController do
 
   defp top_stats_entry(current_results, prev_results, name, key) do
     if current_results[key] do
-      %{
-        name: name,
-        value: current_results[key][:value],
-        change: calculate_change(key, prev_results[key][:value], current_results[key][:value])
-      }
+      value = get_in(current_results, [key, :value])
+
+      if prev_results do
+        prev_value = get_in(prev_results, [key, :value])
+        change = calculate_change(key, prev_value, value)
+        %{name: name, value: value, comparison_value: prev_value, change: change}
+      else
+        %{name: name, value: value}
+      end
     end
   end
 
@@ -351,6 +441,8 @@ defmodule PlausibleWeb.Api.StatsController do
   defp calculate_change(_metric, old_count, new_count) do
     percent_change(old_count, new_count)
   end
+
+  defp percent_change(nil, _new_count), do: nil
 
   defp percent_change(old_count, new_count) do
     cond do
@@ -371,7 +463,6 @@ defmodule PlausibleWeb.Api.StatsController do
     query =
       Query.from(site, params)
       |> Filters.add_prefix()
-      |> maybe_hide_noref("visit:source", params)
 
     pagination = parse_pagination(params)
 
@@ -402,7 +493,6 @@ defmodule PlausibleWeb.Api.StatsController do
     query =
       Query.from(site, params)
       |> Filters.add_prefix()
-      |> maybe_hide_noref("visit:utm_medium", params)
 
     pagination = parse_pagination(params)
 
@@ -432,7 +522,6 @@ defmodule PlausibleWeb.Api.StatsController do
     query =
       Query.from(site, params)
       |> Filters.add_prefix()
-      |> maybe_hide_noref("visit:utm_campaign", params)
 
     pagination = parse_pagination(params)
 
@@ -462,7 +551,6 @@ defmodule PlausibleWeb.Api.StatsController do
     query =
       Query.from(site, params)
       |> Filters.add_prefix()
-      |> maybe_hide_noref("visit:utm_content", params)
 
     pagination = parse_pagination(params)
     metrics = [:visitors, :bounce_rate, :visit_duration]
@@ -491,7 +579,6 @@ defmodule PlausibleWeb.Api.StatsController do
     query =
       Query.from(site, params)
       |> Filters.add_prefix()
-      |> maybe_hide_noref("visit:utm_term", params)
 
     pagination = parse_pagination(params)
     metrics = [:visitors, :bounce_rate, :visit_duration]
@@ -520,7 +607,6 @@ defmodule PlausibleWeb.Api.StatsController do
     query =
       Query.from(site, params)
       |> Filters.add_prefix()
-      |> maybe_hide_noref("visit:utm_source", params)
 
     pagination = parse_pagination(params)
 
@@ -782,7 +868,7 @@ defmodule PlausibleWeb.Api.StatsController do
           country_entry = get_country(region_entry.country_code)
           Map.merge(region, %{name: region_entry.name, country_flag: country_entry.flag})
         else
-          Sentry.capture_message("Could not find region info", extra: %{code: region[:code]})
+          Logger.warning("Could not find region info - code: #{inspect(region[:code])}")
           Map.merge(region, %{name: region[:code]})
         end
       end)
@@ -819,7 +905,7 @@ defmodule PlausibleWeb.Api.StatsController do
             country_flag: country_info.flag
           })
         else
-          Sentry.capture_message("Could not find city info", extra: %{code: city[:code]})
+          Logger.warning("Could not find city info - code: #{inspect(city[:code])}")
 
           Map.merge(city, %{name: "N/A"})
         end
@@ -938,7 +1024,7 @@ defmodule PlausibleWeb.Api.StatsController do
     end
   end
 
-  defp calculate_cr(nil, _converted_visitors), do: 100.0
+  defp calculate_cr(nil, _converted_visitors), do: nil
 
   defp calculate_cr(unique_visitors, converted_visitors) do
     if unique_visitors > 0,
@@ -961,13 +1047,6 @@ defmodule PlausibleWeb.Api.StatsController do
 
     %{visitors: %{value: total_visitors}} = Stats.aggregate(site, total_q, [:visitors])
 
-    prop_names =
-      if query.filters["event:goal"] do
-        Stats.props(site, query)
-      else
-        %{}
-      end
-
     conversions =
       Stats.breakdown(site, query, "event:goal", [:visitors, :events], {100, 1})
       |> transform_keys(%{
@@ -977,7 +1056,7 @@ defmodule PlausibleWeb.Api.StatsController do
       })
       |> Enum.map(fn goal ->
         goal
-        |> Map.put(:prop_names, prop_names[goal[:name]])
+        |> Map.put(:prop_names, CustomProps.props_for_goal(site, query))
         |> Map.put(:conversion_rate, calculate_cr(total_visitors, goal[:unique_conversions]))
       end)
 
@@ -1025,15 +1104,7 @@ defmodule PlausibleWeb.Api.StatsController do
     site = conn.assigns[:site]
     query = Query.from(site, params) |> Filters.add_prefix()
 
-    prop_names =
-      if query.filters["event:goal"] do
-        {_, _, goal} = query.filters["event:goal"]
-
-        Stats.props(site, query)
-        |> Map.get(goal, [])
-      else
-        []
-      end
+    prop_names = Plausible.Stats.CustomProps.props_for_goal(site, query)
 
     values =
       prop_names
@@ -1060,13 +1131,14 @@ defmodule PlausibleWeb.Api.StatsController do
   def filter_suggestions(conn, params) do
     site = conn.assigns[:site]
 
-    with :ok <- validate_params(params) do
-      query = Query.from(site, params) |> Filters.add_prefix()
+    query =
+      Query.from(site, params)
+      |> Filters.add_prefix()
 
-      json(conn, Stats.filter_suggestions(site, query, params["filter_name"], params["q"]))
-    else
-      {:error, message} when is_binary(message) -> bad_request(conn, message)
-    end
+    json(
+      conn,
+      Stats.filter_suggestions(site, query, params["filter_name"], params["q"])
+    )
   end
 
   defp transform_keys(results, keys_to_replace) do
@@ -1105,17 +1177,6 @@ defmodule PlausibleWeb.Api.StatsController do
       Enum.map(stat_list, fn stat ->
         Map.put(stat, :percentage, round(stat[:visitors] / total * 100))
       end)
-    end
-  end
-
-  defp maybe_hide_noref(query, property, params) do
-    cond do
-      is_nil(query.filters[property]) and params["show_noref"] != "true" ->
-        new_filters = Map.put(query.filters, property, {:is_not, "Direct / None"})
-        %Query{query | filters: new_filters}
-
-      true ->
-        query
     end
   end
 
@@ -1161,7 +1222,7 @@ defmodule PlausibleWeb.Api.StatsController do
   defp get_country(code) do
     case Location.get_country(code) do
       nil ->
-        Sentry.capture_message("Could not find country info", extra: %{code: code})
+        Logger.warning("Could not find country info - code: #{inspect(code)}")
 
         %Location.Country{
           alpha_2: code,
@@ -1175,24 +1236,33 @@ defmodule PlausibleWeb.Api.StatsController do
     end
   end
 
+  defp validate_common_input(conn, _opts) do
+    case validate_params(conn.params) do
+      :ok -> conn
+      {:error, message} when is_binary(message) -> bad_request(conn, message)
+    end
+  end
+
   defp validate_params(params) do
-    with :ok <- validate_date(params),
+    with :ok <- validate_dates(params),
          :ok <- validate_interval(params),
          do: validate_interval_granularity(params)
   end
 
-  defp validate_date(params) do
-    with %{"date" => date} <- params,
-         {:ok, _} <- Date.from_iso8601(date) do
-      :ok
-    else
-      %{} ->
-        :ok
+  defp validate_dates(params) do
+    params
+    |> Map.take(["from", "to", "date"])
+    |> Enum.reduce_while(:ok, fn {key, value}, _ ->
+      case Date.from_iso8601(value) do
+        {:ok, _} ->
+          {:cont, :ok}
 
-      {:error, _reason} ->
-        {:error,
-         "Failed to parse date argument. Only ISO 8601 dates are allowed, e.g. `2019-09-07`, `2020-01-01`"}
-    end
+        _ ->
+          {:halt,
+           {:error,
+            "Failed to parse '#{key}' argument. Only ISO 8601 dates are allowed, e.g. `2019-09-07`, `2020-01-01`"}}
+      end
+    end)
   end
 
   defp validate_interval(params) do
@@ -1227,5 +1297,22 @@ defmodule PlausibleWeb.Api.StatsController do
     conn
     |> put_status(400)
     |> json(%{error: message})
+    |> halt()
+  end
+
+  defp parse_comparison_opts(params) do
+    [
+      from: params["compare_from"],
+      to: params["compare_to"],
+      match_day_of_week?: params["match_day_of_week"] == "true"
+    ]
+  end
+
+  defp with_imported?(source_query, comparison_query) do
+    cond do
+      source_query.include_imported -> true
+      comparison_query && comparison_query.include_imported -> true
+      true -> false
+    end
   end
 end
